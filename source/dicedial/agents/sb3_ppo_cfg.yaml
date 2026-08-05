@@ -1,7 +1,7 @@
 seed: 42
 n_timesteps: 100000000
 policy: MlpPolicy
-n_steps: 16
+n_steps: 128
 n_minibatches: 8
 gae_lambda: 0.95
 gamma: 0.99

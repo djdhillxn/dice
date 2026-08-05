@@ -1,6 +1,6 @@
 # DiceDial
 
-**Command-conditioned in-hand die reorientation with an Isaac Lab Shadow Hand and Stable-Baselines3 PPO.**
+**Command-conditioned in-hand die reorientation with an Isaac Lab Shadow Hand and RSL-RL PPO.**
 
 A single policy receives a requested die face, rotates the die in-hand until that face points upward, holds it stable, and then receives another command without releasing the object. The rendered demonstration cycles through `1 → 6 → 3 → 5 → 2 → 4`.
 
@@ -57,7 +57,7 @@ conda activate dicedial
 pip install -U torch torchvision \
   --index-url https://download.pytorch.org/whl/cu128
 
-pip install "isaacsim[all,extscache]" \
+pip install isaacsim \
   --extra-index-url https://pypi.nvidia.com
 ```
 
@@ -99,40 +99,52 @@ The first Isaac run can pause while NVIDIA assets are downloaded and cached.
 
 | Environment | Purpose |
 |---|---|
-| `DiceDial-Shadow-Easy-v0` | Fixed face 1, relaxed hold gate; validates retention and reward wiring |
-| `DiceDial-Shadow-Random-v0` | Random requested face; validates command conditioning |
-| `DiceDial-Shadow-Sequence-v0` | New different face after every success; main training task |
-| `DiceDial-Shadow-Robust-v0` | Evaluation-only sequence task with die mass/friction variation |
+| `DiceDial-Shadow-Sequence-v0` | Main training — ACL starts with relaxed thresholds and tightens automatically |
+| `DiceDial-Shadow-Robust-v0` | Evaluation-only; die mass/friction variation ±20 % |
 | `DiceDial-Shadow-Play-v0` | One environment and deterministic six-face sequence for video |
 
-All environments expose a 20-dimensional continuous action and a 164-dimensional observation. The observation is the inherited 157-dimensional full Shadow Hand observation plus a six-way target and scalar hold progress.
+The old `DiceDial-Shadow-Easy-v0` and `DiceDial-Shadow-Random-v0` stage
+environments have been removed.  Their roles are absorbed by the ACL levels
+(Level 0 and Level 1) inside the single training environment.
+
+All environments expose a 20-dimensional continuous action and a **171-dimensional**
+observation.  The observation is the inherited 157-dimensional full Shadow Hand
+observation, extended with a six-way target one-hot, scalar hold progress, commanded
+face normal in world frame (3), current top-face normal in world frame (3), and
+alignment scalar (1).
 
 ## Training
 
-### One-command smoke training
+### Single strong training run (recommended)
 
 ```bash
-python scripts/train.py \
-  --task DiceDial-Shadow-Easy-v0 \
+python scripts/train_rsl.py \
   --num_envs 2048 \
-  --total_timesteps 5000000 \
-  --run_name easy_debug \
+  --max_iterations 50000 \
+  --run_name strong_run \
   --headless
 ```
 
-### Complete curriculum
+This runs a single continuous RSL-RL PPO job on `DiceDial-Shadow-Sequence-v0`.
+The **Automatic Curriculum Learning (ACL)** manager tightens the success thresholds
+automatically as the policy improves — no manual stage transitions.
 
-```bash
-bash scripts/train_curriculum.sh
-```
+| ACL Level | `success_angle_deg` | `hold_steps` | Advance when… |
+|---|---|---|---|
+| 0 — relaxed | 30° | 8 | cmds/ep mean > 0.5 |
+| 1 | 24° | 12 | cmds/ep mean > 1.0 |
+| 2 | 20° | 16 | cmds/ep mean > 1.5 |
+| 3 — final | 16° | 20 | — |
 
-The included fast curriculum uses 5M, 10M, and 20M environment steps. Treat it as a first proof, not a guaranteed final budget. A stronger final run can expand these stages to roughly 20M, 40M, and 100M while keeping the same code and checkpoints.
+The training algorithm is **RSL-RL on-GPU PPO** with `num_steps_per_env=128`,
+adaptive learning-rate schedule, and domain randomisation (mass ±20 %,
+friction ±20 %) active from the first step.
 
-The final files from the included curriculum are:
+Model checkpoints are saved at ACL advancement events and at the end:
 
 ```text
-outputs/DiceDial-Shadow-Sequence-v0/stage3_sequence/model.zip
-outputs/DiceDial-Shadow-Sequence-v0/stage3_sequence/model_vecnormalize.pkl
+outputs/DiceDial-Shadow-Sequence-v0/strong_run/model_acl_Level_3_*_final.pt
+outputs/DiceDial-Shadow-Sequence-v0/strong_run/model_final.pt
 ```
 
 Monitor training:
@@ -141,28 +153,26 @@ Monitor training:
 tensorboard --logdir outputs
 ```
 
-Plot the compact task trace:
+### Resume from a checkpoint
 
 ```bash
-python scripts/plot_metrics.py \
-  --csv outputs/DiceDial-Shadow-Sequence-v0/stage3_sequence/task_metrics.csv \
-  --output outputs/dicedial_training_metrics.png
-```
-
-### Resume or warm-start manually
-
-Always load the model and its paired observation-normalization statistics together:
-
-```bash
-python scripts/train.py \
+python scripts/train_rsl.py \
   --task DiceDial-Shadow-Sequence-v0 \
-  --checkpoint path/to/model.zip \
-  --vecnormalize path/to/model_vecnormalize.pkl \
-  --total_timesteps 20000000 \
-  --run_name continued_sequence \
+  --resume outputs/DiceDial-Shadow-Sequence-v0/strong_run/model_5000.pt \
+  --max_iterations 50000 \
+  --run_name strong_run_continued \
   --num_envs 2048 \
   --headless
 ```
+
+The ACL state is automatically restored from the `.acl.json` file paired with
+the checkpoint.
+
+### SB3 fallback
+
+The original SB3 PPO trainer (`scripts/train.py`) is still available as a
+fallback.  Its `n_steps` has been raised to 128.  Evaluation and video
+scripts (`evaluate.py`, `play.py`) continue to use SB3 for compatibility.
 
 ## Evaluation
 

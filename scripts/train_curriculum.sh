@@ -1,28 +1,25 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-# Fast first-pass curriculum. Increase the three budgets for final training.
-python scripts/train.py \
-  --task DiceDial-Shadow-Easy-v0 \
-  --run_name stage1_easy \
-  --num_envs 2048 \
-  --total_timesteps 5000000 \
-  --headless
-
-python scripts/train.py \
-  --task DiceDial-Shadow-Random-v0 \
-  --run_name stage2_random \
-  --num_envs 2048 \
-  --total_timesteps 10000000 \
-  --checkpoint outputs/DiceDial-Shadow-Easy-v0/stage1_easy/model.zip \
-  --vecnormalize outputs/DiceDial-Shadow-Easy-v0/stage1_easy/model_vecnormalize.pkl \
-  --headless
-
-python scripts/train.py \
-  --task DiceDial-Shadow-Sequence-v0 \
-  --run_name stage3_sequence \
-  --num_envs 2048 \
-  --total_timesteps 20000000 \
-  --checkpoint outputs/DiceDial-Shadow-Random-v0/stage2_random/model.zip \
-  --vecnormalize outputs/DiceDial-Shadow-Random-v0/stage2_random/model_vecnormalize.pkl \
-  --headless
+# ============================================================
+# DEPRECATED — the 3-stage hard curriculum has been replaced.
+# ============================================================
+#
+# Use the single-run RSL-RL training script instead:
+#
+#   python scripts/train_rsl.py \
+#       --num_envs 2048 \
+#       --max_iterations 50000 \
+#       --run_name strong_run \
+#       --headless
+#
+# The new training strategy:
+#   - RSL-RL on-GPU PPO (5-10x faster than SB3)
+#   - num_steps_per_env=128 for proper credit assignment
+#   - Automatic Curriculum Learning (ACL) via rolling success-rate gating
+#   - Stable-gated wrong-face penalty (no penalty during rotation)
+#   - Domain randomization from day one (mass ±20%, friction ±20%)
+#   - Face-normal supplementary observations (yaw-invariant signal)
+#
+# This file is kept only as a historical reference.
+echo "ERROR: train_curriculum.sh is deprecated." >&2
+echo "Run: python scripts/train_rsl.py --num_envs 2048 --max_iterations 50000 --headless" >&2
+exit 1

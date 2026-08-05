@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dicedial"
 version = "0.1.0"
-description = "Command-conditioned in-hand die reorientation with Isaac Lab and Stable-Baselines3 PPO."
+description = "Command-conditioned in-hand die reorientation with Isaac Lab, RSL-RL PPO, and ACL."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -18,6 +18,7 @@ dependencies = [
   "pandas",
   "matplotlib",
   "tqdm",
+  "rsl-rl",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +33,7 @@ include-package-data = true
 where = ["source"]
 
 [tool.setuptools.package-data]
-dicedial = ["agents/*.yaml", "assets/*.usda"]
+dicedial = ["agents/*.yaml", "agents/*.py", "assets/*.usda"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
