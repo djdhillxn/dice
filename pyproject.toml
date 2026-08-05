@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dicedial"
+version = "0.1.0"
+description = "Command-conditioned in-hand die reorientation with Isaac Lab and Stable-Baselines3 PPO."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Dheeraj Dhillon"}]
+dependencies = [
+  "stable-baselines3[extra]",
+  "gymnasium",
+  "PyYAML",
+  "numpy",
+  "pandas",
+  "matplotlib",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+video = ["opencv-python"]
+test = ["pytest"]
+
+[tool.setuptools]
+package-dir = {"" = "source"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["source"]
+
+[tool.setuptools.package-data]
+dicedial = ["agents/*.yaml", "assets/*.usda"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

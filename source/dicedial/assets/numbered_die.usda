@@ -1,0 +1,402 @@
+#usda 1.0
+(
+    defaultPrim = "Dice"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "Dice" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    bool physics:rigidBodyEnabled = true
+    float physics:mass = 0.08
+
+    def Cube "Collision" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 0.065
+        bool physics:collisionEnabled = true
+        token visibility = "invisible"
+    }
+
+    def Cube "Core"
+    {
+        double size = 0.064
+        rel material:binding = </Dice/Looks/Core>
+    }
+
+    def Xform "Face1"
+    {
+        double3 xformOp:translate = (0, 0, 0.0325)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Panel"
+        {
+            double size = 1
+            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            rel material:binding = </Dice/Looks/Face1>
+        }
+
+        def Sphere "Pip1"
+        {
+            double radius = 0.004
+            double3 xformOp:translate = (0, 0, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+    }
+
+    def Xform "Face6"
+    {
+        quatd xformOp:orient = (0, 1, 0, 0)
+        double3 xformOp:translate = (0, 0, -0.0325)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+        def Cube "Panel"
+        {
+            double size = 1
+            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            rel material:binding = </Dice/Looks/Face6>
+        }
+
+        def Sphere "Pip1"
+        {
+            double radius = 0.0036
+            double3 xformOp:translate = (-0.015, -0.015, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip2"
+        {
+            double radius = 0.0036
+            double3 xformOp:translate = (-0.015, 0, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip3"
+        {
+            double radius = 0.0036
+            double3 xformOp:translate = (-0.015, 0.015, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip4"
+        {
+            double radius = 0.0036
+            double3 xformOp:translate = (0.015, -0.015, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip5"
+        {
+            double radius = 0.0036
+            double3 xformOp:translate = (0.015, 0, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip6"
+        {
+            double radius = 0.0036
+            double3 xformOp:translate = (0.015, 0.015, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+    }
+
+    def Xform "Face2"
+    {
+        quatd xformOp:orient = (0.70710678, 0, 0.70710678, 0)
+        double3 xformOp:translate = (0.0325, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+        def Cube "Panel"
+        {
+            double size = 1
+            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            rel material:binding = </Dice/Looks/Face2>
+        }
+
+        def Sphere "Pip1"
+        {
+            double radius = 0.004
+            double3 xformOp:translate = (-0.014, -0.014, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip2"
+        {
+            double radius = 0.004
+            double3 xformOp:translate = (0.014, 0.014, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+    }
+
+    def Xform "Face5"
+    {
+        quatd xformOp:orient = (0.70710678, 0, -0.70710678, 0)
+        double3 xformOp:translate = (-0.0325, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+        def Cube "Panel"
+        {
+            double size = 1
+            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            rel material:binding = </Dice/Looks/Face5>
+        }
+
+        def Sphere "Pip1"
+        {
+            double radius = 0.0038
+            double3 xformOp:translate = (-0.015, -0.015, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip2"
+        {
+            double radius = 0.0038
+            double3 xformOp:translate = (-0.015, 0.015, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip3"
+        {
+            double radius = 0.0038
+            double3 xformOp:translate = (0, 0, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip4"
+        {
+            double radius = 0.0038
+            double3 xformOp:translate = (0.015, -0.015, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip5"
+        {
+            double radius = 0.0038
+            double3 xformOp:translate = (0.015, 0.015, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+    }
+
+    def Xform "Face3"
+    {
+        quatd xformOp:orient = (0.70710678, -0.70710678, 0, 0)
+        double3 xformOp:translate = (0, 0.0325, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+        def Cube "Panel"
+        {
+            double size = 1
+            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            rel material:binding = </Dice/Looks/Face3>
+        }
+
+        def Sphere "Pip1"
+        {
+            double radius = 0.004
+            double3 xformOp:translate = (-0.014, -0.014, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip2"
+        {
+            double radius = 0.004
+            double3 xformOp:translate = (0, 0, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip3"
+        {
+            double radius = 0.004
+            double3 xformOp:translate = (0.014, 0.014, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+    }
+
+    def Xform "Face4"
+    {
+        quatd xformOp:orient = (0.70710678, 0.70710678, 0, 0)
+        double3 xformOp:translate = (0, -0.0325, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+        def Cube "Panel"
+        {
+            double size = 1
+            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            rel material:binding = </Dice/Looks/Face4>
+        }
+
+        def Sphere "Pip1"
+        {
+            double radius = 0.004
+            double3 xformOp:translate = (-0.014, -0.014, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip2"
+        {
+            double radius = 0.004
+            double3 xformOp:translate = (-0.014, 0.014, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip3"
+        {
+            double radius = 0.004
+            double3 xformOp:translate = (0.014, -0.014, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+
+        def Sphere "Pip4"
+        {
+            double radius = 0.004
+            double3 xformOp:translate = (0.014, 0.014, 0.0012)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            rel material:binding = </Dice/Looks/Pip>
+        }
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Core"
+        {
+            token outputs:surface.connect = </Dice/Looks/Core/Shader.outputs:surface>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.035, 0.045, 0.065)
+                float inputs:metallic = 0.05
+                float inputs:roughness = 0.32
+                token outputs:surface
+            }
+        }
+
+        def Material "Pip"
+        {
+            token outputs:surface.connect = </Dice/Looks/Pip/Shader.outputs:surface>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.98, 0.98, 0.98)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.25
+                token outputs:surface
+            }
+        }
+
+        def Material "Face1"
+        {
+            token outputs:surface.connect = </Dice/Looks/Face1/Shader.outputs:surface>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.84, 0.12, 0.12)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.38
+                token outputs:surface
+            }
+        }
+
+        def Material "Face2"
+        {
+            token outputs:surface.connect = </Dice/Looks/Face2/Shader.outputs:surface>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.1, 0.4, 0.88)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.38
+                token outputs:surface
+            }
+        }
+
+        def Material "Face3"
+        {
+            token outputs:surface.connect = </Dice/Looks/Face3/Shader.outputs:surface>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.1, 0.72, 0.32)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.38
+                token outputs:surface
+            }
+        }
+
+        def Material "Face4"
+        {
+            token outputs:surface.connect = </Dice/Looks/Face4/Shader.outputs:surface>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.92, 0.54, 0.08)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.38
+                token outputs:surface
+            }
+        }
+
+        def Material "Face5"
+        {
+            token outputs:surface.connect = </Dice/Looks/Face5/Shader.outputs:surface>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.56, 0.18, 0.82)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.38
+                token outputs:surface
+            }
+        }
+
+        def Material "Face6"
+        {
+            token outputs:surface.connect = </Dice/Looks/Face6/Shader.outputs:surface>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.05, 0.72, 0.78)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.38
+                token outputs:surface
+            }
+        }
+
+    }
+}

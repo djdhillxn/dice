@@ -1,3 +1,25 @@
+Metadata-Version: 2.4
+Name: dicedial
+Version: 0.1.0
+Summary: Command-conditioned in-hand die reorientation with Isaac Lab and Stable-Baselines3 PPO.
+Author: Dheeraj Dhillon
+License: MIT
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: stable-baselines3[extra]<3,>=2.4
+Requires-Dist: gymnasium<2,>=0.29
+Requires-Dist: PyYAML>=6
+Requires-Dist: numpy>=1.26
+Requires-Dist: pandas>=2.2
+Requires-Dist: matplotlib>=3.8
+Requires-Dist: tqdm>=4.66
+Provides-Extra: video
+Requires-Dist: opencv-python>=4.10; extra == "video"
+Provides-Extra: test
+Requires-Dist: pytest>=8; extra == "test"
+Dynamic: license-file
+
 # DiceDial
 
 **Command-conditioned in-hand die reorientation with an Isaac Lab Shadow Hand and Stable-Baselines3 PPO.**
@@ -42,29 +64,29 @@ docs/
 
 ## Supported stack
 
-This repository targets **Isaac Lab / Isaac Sim / Python**. Use Ubuntu 22.04 or Windows 11 with a supported NVIDIA GPU. A GPU with at least 16 GB VRAM is the practical target for the default 2,048 parallel environments; lower `--num_envs` when necessary.
+This repository targets the stable **Isaac Lab v2.3.2 / Isaac Sim 5.1 / Python 3.11** stack. Use Ubuntu 22.04 or Windows 11 with a supported NVIDIA GPU. A GPU with at least 16 GB VRAM is the practical target for the default 2,048 parallel environments; lower `--num_envs` when necessary.
 
 Isaac Lab is the successor to the standalone Isaac Gym stack. The project name retains the original idea, but the implementation uses the maintained Isaac Lab environment and wrappers.
 
 ## Installation
 
-Create a clean environment and install the packages:
+Create a clean environment and install the versions expected by Isaac Sim 5.1:
 
 ```bash
-conda create -n dicedial python -y
+conda create -n dicedial python=3.11 -y
 conda activate dicedial
 
-pip install -U torch torchvision \
+pip install -U torch==2.7.0 torchvision==0.22.0 \
   --index-url https://download.pytorch.org/whl/cu128
 
-pip install "isaacsim[all,extscache]" \
+pip install "isaacsim[all,extscache]==5.1.0" \
   --extra-index-url https://pypi.nvidia.com
 ```
 
-Install Isaac Lab:
+Install Isaac Lab from the stable tag:
 
 ```bash
-git clone --depth 1 https://github.com/isaac-sim/IsaacLab.git
+git clone --branch v2.3.2 --depth 1 https://github.com/isaac-sim/IsaacLab.git
 cd IsaacLab
 ./isaaclab.sh --install
 cd ..
