@@ -1,34 +1,46 @@
-# Experiment plan
+# DICE experiment plan
 
-## Development gates
+## Primary run
 
-### Gate 0 — task contract
+Run one full-task PPO experiment:
 
-Run `scripts/smoke_test.py` with 16 environments. Require finite observations and rewards, the expected `(num_envs, 164)` policy observation, and valid face commands.
+```text
+seed: 42
+environments: 2048
+steps per environment: 16
+maximum iterations: 10000
+checkpoint interval: 250
+```
 
-### Gate 1 — face-one retention
+No success thresholds, rewards, object distribution, or command distribution change during training.
 
-Train `DiceDial-Shadow-Easy-v0`. Inspect alignment, hold progress, and drop rate. The purpose is to verify the reward, object asset, and policy/controller interface before testing command conditioning.
+## Checkpoint selection
 
-### Gate 2 — six-face command conditioning
+The run already produces regular checkpoints. Use nominal frozen-policy evaluation to compare late checkpoints rather than launching new training configurations immediately.
 
-Warm-start `DiceDial-Shadow-Random-v0` from Gate 1. Evaluate per-face success counts to ensure the policy is not ignoring the one-hot command or collapsing to one easy face.
+Rank candidate checkpoints by:
 
-### Gate 3 — continuous command sequence
+1. mean completed commands per episode
+2. drop rate
+3. minimum per-face success rate
+4. median successful-command latency
 
-Warm-start `DiceDial-Shadow-Sequence-v0` from Gate 2. The main metric becomes consecutive commands before a drop or timeout.
+Training reward is diagnostic, not the final selection metric.
 
-## Final evaluation
+## Final reporting
 
-Use a fixed held-out seed and at least 500 completed episodes. Report:
+For the selected checkpoint, report:
 
-- target-face success rate
-- median time to target
-- die-drop rate
-- mean and maximum consecutive commands
+- 500 nominal episodes
+- 500 held-out robustness episodes
+- command success rate
+- drop rate
+- mean and median completed commands per episode
+- median time to successful command
+- six per-face success rates
 
-Run three seeds for the final portfolio result. Aggregate mean and standard deviation across seeds; preserve each seed's raw `episodes.csv` and `summary.json`.
+The robustness numbers must remain separate from nominal performance because the environments use different physics distributions.
 
-## Optional robustness pass
+## Presentation
 
-After the nominal sequence policy works, evaluate the same frozen checkpoint on `DiceDial-Shadow-Robust-v0`. This task uses Isaac Lab event terms to scale die mass by 0.8–1.2 and randomize static/dynamic friction over 0.8–1.2. Keep nominal and randomized tables separate so robustness does not obscure basic task competence.
+Render one deterministic six-command episode with the numbered die and no randomization. Keep the raw video and the annotated version.

@@ -1,7 +1,7 @@
-"""DiceDial package.
+"""DICE package.
 
-Import ``dicedial.tasks`` after Isaac Sim has been launched to register the
-Gymnasium environments.
+Import ``dicedial.tasks`` after Isaac Sim launches to register the Gymnasium
+environments.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

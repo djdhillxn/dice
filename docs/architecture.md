@@ -1,63 +1,46 @@
-# Architecture
+# DICE architecture
 
-## Reused components
+## Simulator layer
 
-DiceDial deliberately reuses Isaac Lab's direct Shadow Hand cube-reorientation stack:
+DICE subclasses Isaac Lab's direct in-hand manipulation environment. Isaac Lab retains responsibility for the Shadow Hand articulation, contact simulation, stock DexCube, vectorized resets, fingertip state, action smoothing, and joint-target application.
 
-- Shadow Hand articulation and its 20-dimensional joint-target controller
-- fingertip rigid-body state extraction
-- GPU-vectorized environment cloning
-- object and hand reset routines
-- action smoothing and joint-limit scaling
-- the original 157-dimensional full proprioceptive observation
-- Isaac Lab's `Sb3VecEnvWrapper`
-- Stable-Baselines3 PPO, callbacks, TensorBoard logging, and `VecNormalize`
-- Gymnasium's `RecordVideo`
+The custom environment adds only semantic face commands, yaw-invariant face alignment, hold-to-confirm completion, command switching, reward terms, and task diagnostics.
 
-## Custom components
+## Training object versus presentation object
 
-The project adds a small semantic task layer:
+Training, nominal evaluation, and robust evaluation use Isaac Lab's stock instanceable DexCube. This is the performance-sensitive and known-good object path.
 
-1. A die convention with local face normals for numbers 1–6.
-2. A six-dimensional one-hot command and scalar hold-progress observation.
-3. A face-up alignment reward invariant to yaw.
-4. A continuous hold condition based on alignment, palm distance, and angular speed.
-5. Command switching after a held success, without resetting the die.
-6. Evaluation metrics and a video overlay.
-7. A visual USD die with colored numbered faces and a single cube collider.
+The single-environment play configuration replaces it with the local numbered die. Its collision size and density are aligned with the stock cube configuration, but its visible pips are used only for the final video.
 
-## Observation
+## Policy interface
 
-The policy receives 164 values:
-
-- 157 values from the inherited Shadow Hand full observation
-- 6 values for the requested die face
-- 1 value for normalized hold progress
-
-The inherited observation already includes hand joints, hand velocities, die pose and velocity, fingertip poses and velocities, goal orientation, and previous actions.
-
-## Reward
-
-The reward is:
+The actor receives 165 values:
 
 ```text
-alignment reward
-+ palm-retention term
-+ angular-speed term
-+ action regularization
-+ correct-top-face shaping
-+ hold-progress bonus
-+ one-time command-completion bonus
+157 stock Shadow Hand full-observation features
+  6 requested-face one-hot values
+  1 normalized hold counter
+  1 requested-face alignment
+---
+165 total
 ```
 
-The principal signal uses the dot product between the commanded local face normal, rotated into world coordinates, and world up. This means every yaw angle is acceptable and avoids over-constraining the die to one quaternion.
+The action remains the inherited 20-dimensional joint-target action.
 
-## Episode logic
+## Command transition
 
-A command succeeds only when all three conditions remain true for `hold_steps` consecutive control steps:
+A command is completed after 20 consecutive steps satisfying the final orientation, position, and angular-speed gates. The environment then selects a different face while preserving the current hand and cube state. This makes multi-command manipulation part of the training distribution rather than a separate curriculum stage.
 
-- face alignment exceeds the configured angular threshold
-- the die remains within the palm-distance threshold
-- angular speed remains below the settling threshold
+## Runtime paths
 
-After success, the sequence task samples a different face and keeps the current hand and die state. A drop or time limit ends the episode.
+```text
+train_rsl.py
+  DICE-Shadow-Train-v0
+  RslRlVecEnvWrapper
+  OnPolicyRunner
+  .pt checkpoints
+
+                    ┌─ evaluate_rsl.py → nominal metrics
+.pt checkpoint ─────┼─ evaluate_rsl.py → robust metrics
+                    └─ play_rsl.py     → raw MP4 + overlay CSV
+```

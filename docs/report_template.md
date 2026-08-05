@@ -1,33 +1,59 @@
-# DiceDial project report template
+# DICE results template
 
-## Project question
+## System
 
-Can one command-conditioned dexterous-hand policy expose any requested die face and execute multiple face commands without releasing the object?
+- Isaac Lab / Isaac Sim environment:
+- GPU:
+- number of parallel environments:
+- control timestep:
+- training iterations:
+- selected checkpoint:
 
-## Method
+## Training configuration
 
-Describe the inherited Isaac Lab Shadow Hand environment, the semantic face command, the yaw-invariant alignment objective, the hold condition, and the SB3 PPO configuration.
+- observation dimension: 165
+- action dimension: 20
+- steps per environment: 16
+- actor/critic architecture: 512, 512, 256, 128
+- PPO clip: 0.2
+- learning rate: 5e-4, adaptive
+- desired KL: 0.016
+- epochs / minibatches: 5 / 4
+- gamma / lambda: 0.99 / 0.95
 
-## Experimental protocol
+## Final task definition
 
-Document simulator and package versions, GPU, environment count, total environment steps, random seeds, curriculum checkpoints, and deterministic evaluation settings.
+- success angle: 16 degrees
+- hold duration: 20 control steps
+- angular-speed threshold: 1.25 rad/s
+- position tolerance: 0.12 m
+- command sequence behavior: new different face without object reset
 
-## Results
+## Evaluation
 
-| Seed | Face success | Median target time | Drop rate | Mean sequence | Max sequence |
-|---|---:|---:|---:|---:|---:|
-| 1 | | | | | |
-| 2 | | | | | |
-| 3 | | | | | |
+| Metric | Nominal | Robust |
+|---|---:|---:|
+| Episodes | | |
+| Command success rate | | |
+| Drop rate | | |
+| Mean commands per episode | | |
+| Median commands per episode | | |
+| Median command latency | | |
 
-## Ablation
+## Per-face success
 
-Compare the full hold-to-confirm objective against an alignment-only reward. The intended question is whether explicit settling and continuous hold improve stable command completion rather than merely producing transient face crossings.
+| Face | Nominal | Robust |
+|---|---:|---:|
+| 1 | | |
+| 2 | | |
+| 3 | | |
+| 4 | | |
+| 5 | | |
+| 6 | | |
 
-## Qualitative analysis
+## Qualitative result
 
-Include successful transitions, slow transitions, oscillatory near-successes, command-ignoring behavior, and drops. Link the annotated video and note whether failures are caused by contact loss, insufficient rotation, or inability to settle.
-
-## Limitations
-
-State that the policy uses privileged simulator state, remains simulation-only, and has not demonstrated sim-to-real transfer. Avoid claiming general dexterous manipulation from one die task.
+- strongest behavior:
+- most common failure:
+- whether failure is orientation, retention, settling, or dropping:
+- selected video command sequence:

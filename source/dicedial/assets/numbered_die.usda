@@ -6,11 +6,10 @@
 )
 
 def Xform "Dice" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
 )
 {
     bool physics:rigidBodyEnabled = true
-    float physics:mass = 0.08
 
     def Cube "Collision" (
         prepend apiSchemas = ["PhysicsCollisionAPI"]

@@ -1,14 +1,15 @@
-"""Configuration variants for the command-conditioned die task.
+"""Environment configurations for DICE.
 
-Training uses ``DiceDial-Shadow-Sequence-v0`` with a single continuous run.
-The Automatic Curriculum Learning (ACL) manager in ``dicedial.curriculum``
-morphs the success thresholds in place as the policy improves — no separate
-stage environments are required.  ``DiceDial-Shadow-Robust-v0`` is kept as a
-held-out evaluation variant.  ``DiceDial-Shadow-Play-v0`` is for video
-rendering only.
+DICE trains one command-conditioned Shadow Hand policy on the final task from
+iteration zero.  The environments differ only in their runtime purpose:
+
+* ``DICE-Shadow-Train-v0``: stock instanceable DexCube, no domain randomization.
+* ``DICE-Shadow-Eval-v0``: nominal frozen-policy evaluation, no randomization.
+* ``DICE-Shadow-Robust-v0``: held-out object mass and friction randomization.
+* ``DICE-Shadow-Play-v0``: one numbered die, deterministic command sequence,
+  no randomization, and a presentation camera.
 """
 
-import os
 from pathlib import Path
 
 import isaaclab.envs.mdp as mdp
@@ -17,20 +18,20 @@ from isaaclab.assets import RigidObjectCfg
 from isaaclab.envs import ViewerCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab_tasks.direct.shadow_hand.shadow_hand_env_cfg import ShadowHandEnvCfg
 
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-_DIE_USD = str(_PACKAGE_ROOT / "assets" / "numbered_die.usda")
+_NUMBERED_DIE_USD = str(_PACKAGE_ROOT / "assets" / "numbered_die.usda")
 
 
-def _numbered_die_spawn(scale=(1.0, 1.0, 1.0)):
+def _numbered_die_spawn():
+    """Create a video-only die with stock-cube-aligned physical properties."""
+
     return sim_utils.UsdFileCfg(
-        usd_path=_DIE_USD,
-        scale=scale,
+        usd_path=_NUMBERED_DIE_USD,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             kinematic_enabled=False,
@@ -41,17 +42,14 @@ def _numbered_die_spawn(scale=(1.0, 1.0, 1.0)):
             stabilization_threshold=0.0025,
             max_depenetration_velocity=1000.0,
         ),
-        mass_props=sim_utils.MassPropertiesCfg(mass=0.08),
+        mass_props=sim_utils.MassPropertiesCfg(density=567.0),
+        semantic_tags=[("class", "die")],
     )
 
 
-class DiceDialObjectRandomizationCfg:
-    """Die mass and friction randomization applied at every reset.
-
-    Applied in the base training config so the policy is exposed to physical
-    variation from step one.  The Robust eval variant keeps the same events but
-    can be evaluated independently to separate robustness from competence.
-    """
+@configclass
+class DiceRobustObjectEventsCfg:
+    """Held-out object randomization used only by the robustness evaluator."""
 
     object_physics_material = EventTerm(
         func=mdp.randomize_rigid_body_material,
@@ -61,10 +59,11 @@ class DiceDialObjectRandomizationCfg:
             "asset_cfg": SceneEntityCfg("object"),
             "static_friction_range": (0.8, 1.2),
             "dynamic_friction_range": (0.8, 1.2),
-            "restitution_range": (0.0, 0.05),
+            "restitution_range": (0.0, 0.0),
             "num_buckets": 64,
         },
     )
+
     object_mass = EventTerm(
         func=mdp.randomize_rigid_body_mass,
         mode="reset",
@@ -79,23 +78,19 @@ class DiceDialObjectRandomizationCfg:
 
 
 @configclass
-class DiceDialBaseEnvCfg(ShadowHandEnvCfg):
-    """Base DiceDial configuration.
+class DiceBaseEnvCfg(ShadowHandEnvCfg):
+    """Shared final-task configuration.
 
-    The inherited task supplies the Shadow Hand, action controller, fingertip
-    sensing, object resets, scene cloning, and direct vectorized environment.
-    DiceDial only changes the goal semantics and reward.
+    The inherited Shadow Hand task supplies the hand, stock instanceable cube,
+    contacts, action controller, and reset logic. DICE retains the stock
+    157-dimensional full observation and appends eight command features:
 
-    Domain randomization (mass ±20 %, friction ±20 %) is active from the very
-    first reset.  The ACL manager will tighten ``success_angle_deg``,
-    ``hold_steps``, ``success_angular_speed``, and ``angular_speed_scale``
-    progressively during training.
+    * requested-face one-hot: 6
+    * normalized hold progress: 1
+    * requested-face alignment with world up: 1
     """
 
-    # Base Shadow Hand full observation (157) + target one-hot (6) + hold (1)
-    # + commanded face normal in world (3) + top face normal in world (3)
-    # + alignment scalar (1) = 171.
-    observation_space = 171
+    observation_space = 165
     action_space = 20
     state_space = 0
     obs_type = "full"
@@ -109,107 +104,73 @@ class DiceDialBaseEnvCfg(ShadowHandEnvCfg):
 
     episode_length_s = 24.0
 
-    # Command behaviour.
-    target_mode = "random"          # fixed | random | cycle
+    target_mode = "random"  # random | cycle | fixed
     fixed_target_face = 1
     target_sequence = (1, 6, 3, 5, 2, 4)
     switch_target_on_success = True
-    max_commands_per_episode = 0    # zero disables this terminal condition
+    max_commands_per_episode = 0
 
-    # --- Hold-to-confirm thresholds (ACL Level 0 — relaxed) ---
-    # The AclCurriculum callback will overwrite these mid-training.
-    # Final values (Level 3): success_angle_deg=16, hold_steps=20,
-    # success_angular_speed=1.25.
-    success_angle_deg = 30.0
+    # Final task definition used from the first training transition.
+    success_angle_deg = 16.0
     success_position_tolerance = 0.12
-    success_angular_speed = 2.0
-    hold_steps = 8
+    success_angular_speed = 1.25
+    hold_steps = 20
 
-    # --- Reward terms ---
-    alignment_scale = 4.0
+    # Compact reward.  The completion bonus intentionally dominates dense
+    # near-target reward so the policy prefers finishing and accepting a new
+    # command over loitering just below the hold threshold.
+    alignment_scale = 1.0
     alignment_power = 4.0
-    position_error_scale = -2.0
-    # angular_speed_scale starts mild; ACL tightens it alongside the gate.
+    position_error_scale = -5.0
     angular_speed_scale = -0.02
-    action_penalty_scale = -0.002
-    hold_bonus_scale = 0.25
-    success_bonus = 12.0
-    # Wrong-face penalty is now *stable-gated* in the env — it only fires
-    # when angular speed is below success_angular_speed, so the policy is
-    # never penalised for transitioning through other faces during rotation.
-    wrong_face_penalty_scale = -0.15
+    angular_penalty_gate_deg = 30.0
+    action_penalty_scale = -0.0002
+    success_bonus = 250.0
+    drop_penalty = -50.0
 
-    # Domain randomization — active from day one.
-    events: DiceDialObjectRandomizationCfg = DiceDialObjectRandomizationCfg()
+    # Per-environment tensors are unnecessary during PPO collection. Scalar
+    # training logs remain active; detailed step metrics are enabled only for
+    # frozen-policy evaluation and presentation.
+    emit_step_metrics = False
 
-    # A local numbered die is the default. Set DICEDIAL_USE_STOCK_CUBE=1 to
-    # troubleshoot asset loading while preserving the task logic.
-    if os.getenv("DICEDIAL_USE_STOCK_CUBE", "0") == "1":
-        object_cfg = ShadowHandEnvCfg.object_cfg
-        goal_object_cfg = ShadowHandEnvCfg.goal_object_cfg
-    else:
-        object_cfg = RigidObjectCfg(
-            prim_path="/World/envs/env_.*/object",
-            spawn=_numbered_die_spawn(),
-            init_state=RigidObjectCfg.InitialStateCfg(
-                pos=(0.0, -0.39, 0.6),
-                rot=(1.0, 0.0, 0.0, 0.0),
-            ),
-        )
-        goal_object_cfg = VisualizationMarkersCfg(
-            prim_path="/Visuals/goal_marker",
-            markers={
-                "goal": sim_utils.UsdFileCfg(
-                    usd_path=_DIE_USD,
-                    scale=(1.0, 1.0, 1.0),
-                    visual_material=sim_utils.PreviewSurfaceCfg(
-                        diffuse_color=(0.15, 0.8, 0.35),
-                        opacity=0.45,
-                    ),
-                )
-            },
-        )
+    # Nominal training/evaluation use the inherited stock DexCube and no
+    # randomization.  Robust evaluation enables its own event configuration.
+    events = None
 
-
-# ---------------------------------------------------------------------------
-# Training environment — the only config used for live training.
-# ACL starts it at Level 0 (relaxed thresholds) and ratchets automatically.
-# ---------------------------------------------------------------------------
 
 @configclass
-class DiceDialSequenceEnvCfg(DiceDialBaseEnvCfg):
-    """Main training task: successive commands without releasing the die.
-
-    Thresholds start relaxed (ACL Level 0) and are tightened automatically by
-    the AclCurriculum callback as the policy's commands-per-episode mean rises.
-    """
+class DiceTrainEnvCfg(DiceBaseEnvCfg):
+    """Primary training environment: the complete final task, unchanged."""
 
     target_mode = "random"
     switch_target_on_success = True
-    episode_length_s = 24.0
-
-
-# ---------------------------------------------------------------------------
-# Evaluation-only variants
-# ---------------------------------------------------------------------------
-
-@configclass
-class DiceDialRobustEnvCfg(DiceDialSequenceEnvCfg):
-    """Evaluation task with stronger held-out die mass and friction variation.
-
-    Uses the same DR events as the base config but documents intent: this env
-    is never used for training and always evaluated with a frozen checkpoint.
-    Nominal and robustness results must be reported separately.
-    """
-
-    # No extra changes — DiceDialBaseEnvCfg already has DR events at ±20 %.
-    # For a stricter held-out test, consider widening to ±30 % here.
-    pass
 
 
 @configclass
-class DiceDialPlayEnvCfg(DiceDialBaseEnvCfg):
-    """Single-environment deterministic command sequence for video rendering."""
+class DiceEvalEnvCfg(DiceBaseEnvCfg):
+    """Nominal frozen-policy evaluation environment."""
+
+    scene = InteractiveSceneCfg(
+        num_envs=256,
+        env_spacing=0.75,
+        replicate_physics=True,
+        clone_in_fabric=True,
+    )
+    target_mode = "random"
+    switch_target_on_success = True
+    emit_step_metrics = True
+
+
+@configclass
+class DiceRobustEnvCfg(DiceEvalEnvCfg):
+    """Held-out evaluation with ±20% object mass/friction variation."""
+
+    events = DiceRobustObjectEventsCfg()
+
+
+@configclass
+class DicePlayEnvCfg(DiceBaseEnvCfg):
+    """Single numbered-die environment for deterministic video rendering."""
 
     viewer = ViewerCfg(
         eye=(0.95, -1.20, 0.88),
@@ -223,13 +184,20 @@ class DiceDialPlayEnvCfg(DiceDialBaseEnvCfg):
         replicate_physics=False,
         clone_in_fabric=False,
     )
+
+    object_cfg = RigidObjectCfg(
+        prim_path="/World/envs/env_.*/object",
+        spawn=_numbered_die_spawn(),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=(0.0, -0.39, 0.6),
+            rot=(1.0, 0.0, 0.0, 0.0),
+        ),
+    )
+
     target_mode = "cycle"
     target_sequence = (1, 6, 3, 5, 2, 4)
     switch_target_on_success = True
-    max_commands_per_episode = 0
+    max_commands_per_episode = 6
     episode_length_s = 40.0
-    # Play uses the final (Level 3) thresholds for a fair visual demo.
-    success_angle_deg = 16.0
-    hold_steps = 20
-    success_angular_speed = 1.25
-    angular_speed_scale = -0.08
+    emit_step_metrics = True
+    events = None

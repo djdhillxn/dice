@@ -1,42 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL=${1:?"Usage: scripts/run_final_evaluation.sh MODEL.zip VECNORMALIZE.pkl"}
-VECNORMALIZE=${2:?"Usage: scripts/run_final_evaluation.sh MODEL.zip VECNORMALIZE.pkl"}
-EPISODES=${EPISODES:-500}
-NUM_ENVS=${NUM_ENVS:-256}
-RUN_ROBUST=${RUN_ROBUST:-1}
-
-for SEED in 2026 2027 2028; do
-  python scripts/evaluate.py \
-    --task DiceDial-Shadow-Sequence-v0 \
-    --model "$MODEL" \
-    --vecnormalize "$VECNORMALIZE" \
-    --episodes "$EPISODES" \
-    --num_envs "$NUM_ENVS" \
-    --seed "$SEED" \
-    --output "evaluation/nominal_seed_${SEED}" \
-    --headless
-done
-
-python scripts/aggregate_evaluations.py \
-  --inputs 'evaluation/nominal_seed_*/summary.json' \
-  --output evaluation/nominal_aggregate
-
-if [[ "$RUN_ROBUST" == "1" ]]; then
-  for SEED in 3026 3027 3028; do
-    python scripts/evaluate.py \
-      --task DiceDial-Shadow-Robust-v0 \
-      --model "$MODEL" \
-      --vecnormalize "$VECNORMALIZE" \
-      --episodes "$EPISODES" \
-      --num_envs "$NUM_ENVS" \
-      --seed "$SEED" \
-      --output "evaluation/robust_seed_${SEED}" \
-      --headless
-  done
-
-  python scripts/aggregate_evaluations.py \
-    --inputs 'evaluation/robust_seed_*/summary.json' \
-    --output evaluation/robust_aggregate
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 CHECKPOINT [EPISODES] [NUM_ENVS]"
+  exit 1
 fi
+
+CHECKPOINT="$1"
+EPISODES="${2:-500}"
+NUM_ENVS="${3:-256}"
+
+python scripts/evaluate_rsl.py \
+  --task DICE-Shadow-Eval-v0 \
+  --checkpoint "$CHECKPOINT" \
+  --episodes "$EPISODES" \
+  --num_envs "$NUM_ENVS" \
+  --seed 2026 \
+  --output evaluation/nominal \
+  --headless
+
+python scripts/evaluate_rsl.py \
+  --task DICE-Shadow-Robust-v0 \
+  --checkpoint "$CHECKPOINT" \
+  --episodes "$EPISODES" \
+  --num_envs "$NUM_ENVS" \
+  --seed 2027 \
+  --output evaluation/robust \
+  --headless
+
+python - <<'PY'
+import json
+from pathlib import Path
+
+nominal = json.loads(Path("evaluation/nominal/summary.json").read_text())
+robust = json.loads(Path("evaluation/robust/summary.json").read_text())
+output = {
+    "project": "DICE",
+    "nominal": nominal,
+    "robust": robust,
+}
+Path("evaluation/final_summary.json").write_text(json.dumps(output, indent=2))
+print(json.dumps(output, indent=2))
+PY

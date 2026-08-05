@@ -1,4 +1,4 @@
-"""Pure PyTorch geometry helpers used by DiceDial and its CPU-only tests."""
+"""Pure PyTorch geometry helpers used by DICE."""
 
 import math
 

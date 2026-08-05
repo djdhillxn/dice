@@ -1,4 +1,4 @@
-"""Aggregate multiple DiceDial evaluation summaries across held-out seeds."""
+"""Aggregate DICE evaluation summaries without mixing physics distributions."""
 
 import argparse
 import glob
@@ -9,11 +9,10 @@ import numpy as np
 import pandas as pd
 
 
-parser = argparse.ArgumentParser(description="Aggregate DiceDial summary.json files.")
+parser = argparse.ArgumentParser(description="Aggregate DICE summary.json files.")
 parser.add_argument("--inputs", nargs="+", required=True)
 parser.add_argument("--output", default="evaluation/aggregate")
 args = parser.parse_args()
-
 
 HEADLINE_FIELDS = [
     "target_face_success_rate",
@@ -36,16 +35,23 @@ def _stats(values):
     }
 
 
-summaries = []
-for pattern in args.inputs:
-    matches = [Path(item) for item in sorted(glob.glob(pattern))] if any(char in pattern for char in "*?[]") else [Path(pattern)]
-    for path in matches:
-        if not path.exists():
-            raise FileNotFoundError(path)
-        payload = json.loads(path.read_text())
-        payload["source"] = str(path)
-        summaries.append(payload)
+def _load_summaries(patterns):
+    summaries = []
+    for pattern in patterns:
+        if any(character in pattern for character in "*?[]"):
+            paths = [Path(item) for item in sorted(glob.glob(pattern))]
+        else:
+            paths = [Path(pattern)]
+        for path in paths:
+            if not path.exists():
+                raise FileNotFoundError(path)
+            payload = json.loads(path.read_text())
+            payload["source"] = str(path)
+            summaries.append(payload)
+    return summaries
 
+
+summaries = _load_summaries(args.inputs)
 if not summaries:
     raise RuntimeError("No evaluation summaries were found.")
 
@@ -54,7 +60,11 @@ output_dir.mkdir(parents=True, exist_ok=True)
 
 rows = []
 for summary in summaries:
-    row = {"source": summary["source"], "task": summary["task"], "seed": summary["seed"]}
+    row = {
+        "source": summary["source"],
+        "task": summary["task"],
+        "seed": summary["seed"],
+    }
     for field in HEADLINE_FIELDS:
         row[field] = summary.get(field)
     for face in range(1, 7):
@@ -64,18 +74,22 @@ for summary in summaries:
 frame = pd.DataFrame(rows)
 frame.to_csv(output_dir / "runs.csv", index=False)
 
-aggregate = {
-    "task_values": sorted(frame["task"].unique().tolist()),
-    "seeds": [int(seed) for seed in frame["seed"].tolist()],
-    "num_runs": int(len(frame)),
-    "headline": {},
-    "per_face_success_rate": {},
-}
-for field in HEADLINE_FIELDS:
-    values = frame[field].dropna().tolist()
-    aggregate["headline"][field] = _stats(values) if values else None
-for face in range(1, 7):
-    aggregate["per_face_success_rate"][str(face)] = _stats(frame[f"face_{face}_success_rate"].tolist())
+aggregate = {"project": "DICE", "tasks": {}}
+for task, task_frame in frame.groupby("task", sort=True):
+    task_summary = {
+        "seeds": [int(seed) for seed in task_frame["seed"].tolist()],
+        "num_runs": int(len(task_frame)),
+        "headline": {},
+        "per_face_success_rate": {},
+    }
+    for field in HEADLINE_FIELDS:
+        values = task_frame[field].dropna().tolist()
+        task_summary["headline"][field] = _stats(values) if values else None
+    for face in range(1, 7):
+        task_summary["per_face_success_rate"][str(face)] = _stats(
+            task_frame[f"face_{face}_success_rate"].tolist()
+        )
+    aggregate["tasks"][task] = task_summary
 
 (output_dir / "aggregate.json").write_text(json.dumps(aggregate, indent=2))
 print(json.dumps(aggregate, indent=2))

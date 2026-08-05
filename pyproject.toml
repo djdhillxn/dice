@@ -3,27 +3,21 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dicedial"
-version = "0.1.0"
-description = "Command-conditioned in-hand die reorientation with Isaac Lab, RSL-RL PPO, and ACL."
+name = "dice"
+version = "0.2.0"
+description = "DICE: command-conditioned in-hand die reorientation with Isaac Lab and RSL-RL PPO."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [{name = "Dheeraj Dhillon"}]
 dependencies = [
-  "stable-baselines3[extra]",
   "gymnasium",
-  "PyYAML",
   "numpy",
   "pandas",
-  "matplotlib",
-  "tqdm",
-  "rsl-rl",
 ]
 
 [project.optional-dependencies]
 video = ["opencv-python"]
-test = ["pytest"]
 
 [tool.setuptools]
 package-dir = {"" = "source"}
@@ -33,8 +27,4 @@ include-package-data = true
 where = ["source"]
 
 [tool.setuptools.package-data]
-dicedial = ["agents/*.yaml", "agents/*.py", "assets/*.usda"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
+dicedial = ["agents/*.py", "assets/*.usda"]

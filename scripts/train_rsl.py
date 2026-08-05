@@ -1,40 +1,6 @@
-"""Train DiceDial with RSL-RL on-GPU PPO + Automatic Curriculum Learning.
-
-This is the primary training entry point.  It replaces the old 3-stage
-hard curriculum.  A single ``DiceDial-Shadow-Sequence-v0`` environment runs
-for the full duration; the AclCurriculum callback tightens success thresholds
-automatically as the policy improves.
-
-Quick start
------------
-::
-
-    python scripts/train_rsl.py \\
-        --num_envs 2048 \\
-        --max_iterations 50000 \\
-        --run_name strong_run \\
-        --headless
-
-Resume from a checkpoint
-------------------------
-::
-
-    python scripts/train_rsl.py \\
-        --num_envs 2048 \\
-        --max_iterations 50000 \\
-        --resume outputs/DiceDial-Shadow-Sequence-v0/strong_run/model_*.pt \\
-        --run_name strong_run_continued \\
-        --headless
-
-Checkpoint format
------------------
-RSL-RL saves ``model_<iter>.pt`` files containing the actor, critic, and
-optimiser state.  The ACL state is saved alongside in
-``acl_state_<iter>.json``.
-"""
+"""Train DICE once on the complete final task with RSL-RL PPO."""
 
 import argparse
-import contextlib
 import json
 import sys
 from datetime import datetime
@@ -43,59 +9,22 @@ from pathlib import Path
 from isaaclab.app import AppLauncher
 
 
-# ------------------------------------------------------------------ arg parse
 parser = argparse.ArgumentParser(
-    description="Train DiceDial with RSL-RL PPO + ACL.",
+    description="Train DICE with RSL-RL PPO.",
     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
 )
+parser.add_argument("--task", default="DICE-Shadow-Train-v0")
+parser.add_argument("--num_envs", type=int, default=2048)
+parser.add_argument("--max_iterations", type=int, default=10_000)
+parser.add_argument("--run_name", default="final")
+parser.add_argument("--output_root", default="outputs/DICE")
+parser.add_argument("--resume", default=None, help="RSL-RL .pt checkpoint")
+parser.add_argument("--seed", type=int, default=42)
 parser.add_argument(
-    "--task",
-    default="DiceDial-Shadow-Sequence-v0",
-    help="Gymnasium environment ID.",
-)
-parser.add_argument(
-    "--num_envs",
-    type=int,
-    default=2048,
-    help="Number of parallel simulation environments.",
-)
-parser.add_argument(
-    "--max_iterations",
-    type=int,
-    default=50_000,
-    help="Total RSL-RL training iterations (each = one rollout + update).",
-)
-parser.add_argument(
-    "--run_name",
-    default=None,
-    help="Human-readable tag appended to the output directory name.",
-)
-parser.add_argument(
-    "--output_root",
-    default="outputs",
-    help="Root directory for training outputs.",
-)
-parser.add_argument(
-    "--resume",
-    default=None,
-    help="Path to an RSL-RL .pt checkpoint to resume from.",
-)
-parser.add_argument(
-    "--acl_window",
-    type=int,
-    default=50,
-    help="Number of ACL-check calls over which to compute the rolling mean.",
-)
-parser.add_argument(
-    "--acl_check_interval",
-    type=int,
-    default=100,
-    help="RSL-RL iterations between each ACL advancement check.",
-)
-parser.add_argument(
-    "--seed",
-    type=int,
-    default=42,
+    "--disable_fabric",
+    action="store_true",
+    default=False,
+    help="Disable Fabric and use USD I/O operations.",
 )
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -103,134 +32,107 @@ args = parser.parse_args()
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
-# ------------------------------------------------------------------ late imports
-import gymnasium as gym  # noqa: E402
-import torch  # noqa: E402
 
-from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
+import gymnasium as gym
+import torch
+from rsl_rl.runners import OnPolicyRunner
 
-import dicedial.tasks  # noqa: F401, E402  — registers Gymnasium envs
+# Match Isaac Lab's official RSL-RL training path.
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.deterministic = False
+torch.backends.cudnn.benchmark = False
 
-from dicedial.agents.rsl_rl_ppo_cfg import DICEDIAL_RSL_RL_CFG  # noqa: E402
-from dicedial.curriculum import AclCurriculum  # noqa: E402
+from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
+from isaaclab_tasks.utils import parse_env_cfg
 
-# RSL-RL / Isaac Lab wrappers — try both known import paths.
-try:
-    from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # type: ignore[import]
-except ImportError:
-    from isaaclab.envs.wrappers.rsl_rl import RslRlVecEnvWrapper  # type: ignore[import]
-
-try:
-    from rsl_rl.runners import OnPolicyRunner  # type: ignore[import]
-except ImportError as exc:
-    raise ImportError(
-        "rsl_rl is not installed.  Install it with:\n"
-        "  pip install rsl-rl\n"
-        "or follow the Isaac Lab RSL-RL setup guide."
-    ) from exc
+import dicedial.tasks  # noqa: F401
+from dicedial.agents.rsl_rl_ppo_cfg import (
+    compatible_checkpoint_path,
+    make_runner_cfg,
+)
 
 
-def main() -> None:
+def main():
+    device = args.device or "cuda:0"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = args.run_name or timestamp
-    output_dir = Path(args.output_root).resolve() / args.task / run_name
+    directory_name = timestamp if not args.run_name else f"{timestamp}_{args.run_name}"
+    output_dir = Path(args.output_root).resolve() / directory_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ---------------------------------------------------------------- env setup
+    agent_cfg = make_runner_cfg(
+        seed=args.seed,
+        device=device,
+        max_iterations=args.max_iterations,
+        run_name=args.run_name,
+    )
+
     env_cfg = parse_env_cfg(
         args.task,
-        device=args.device or "cuda:0",
+        device=device,
         num_envs=args.num_envs,
         use_fabric=not args.disable_fabric,
     )
     env_cfg.seed = args.seed
+    env_cfg.log_dir = str(output_dir)
 
     raw_env = gym.make(args.task, cfg=env_cfg)
-    env = RslRlVecEnvWrapper(raw_env)
-
-    # ---------------------------------------------------------------- runner
-    runner_cfg = {k: dict(v) for k, v in DICEDIAL_RSL_RL_CFG.items()}
-    runner_cfg["runner"]["run_name"] = run_name
-    runner_cfg["runner"]["max_iterations"] = args.max_iterations
+    env = RslRlVecEnvWrapper(raw_env, clip_actions=agent_cfg.clip_actions)
 
     runner = OnPolicyRunner(
         env,
-        runner_cfg,
+        agent_cfg.to_dict(),
         log_dir=str(output_dir),
-        device=args.device or "cuda:0",
+        device=agent_cfg.device,
     )
 
     if args.resume:
-        runner.load(args.resume)
-        print(f"[DiceDial] Resumed from {args.resume}")
+        checkpoint = compatible_checkpoint_path(Path(args.resume).expanduser().resolve())
+        runner.load(checkpoint)
+        print(f"[DICE] Resumed from: {checkpoint}")
 
-    # ---------------------------------------------------------------- ACL
-    unwrapped = raw_env.unwrapped
-    acl = AclCurriculum(unwrapped, window=args.acl_window)
+    completed_iterations = int(getattr(runner, "current_learning_iteration", 0))
+    remaining_iterations = max(args.max_iterations - completed_iterations, 0)
 
-    # Restore ACL state if resuming.
-    if args.resume:
-        acl_path = Path(args.resume).with_suffix(".acl.json")
-        if acl_path.exists():
-            acl.load_state_dict(json.loads(acl_path.read_text()))
-            print(f"[DiceDial] ACL state restored from {acl_path}  "
-                  f"(level={acl.current_level['name']})")
-
-    # ---------------------------------------------------------------- metadata
     metadata = {
+        "project": "DICE",
         "task": args.task,
-        "num_envs": env_cfg.scene.num_envs,
         "seed": args.seed,
-        "max_iterations": args.max_iterations,
-        "acl_window": args.acl_window,
-        "acl_check_interval": args.acl_check_interval,
+        "device": device,
+        "num_envs": int(env_cfg.scene.num_envs),
+        "num_steps_per_env": int(agent_cfg.num_steps_per_env),
+        "max_iterations": int(args.max_iterations),
+        "completed_iterations_at_start": completed_iterations,
+        "remaining_iterations": remaining_iterations,
         "resume": args.resume,
         "command": " ".join(sys.argv),
+        "agent": agent_cfg.to_dict(),
     }
-    (output_dir / "run.json").write_text(json.dumps(metadata, indent=2))
+    (output_dir / "run.json").write_text(json.dumps(metadata, indent=2, default=str))
 
-    print(f"[DiceDial] Output  : {output_dir}")
-    print(f"[DiceDial] Envs    : {env_cfg.scene.num_envs}")
-    print(f"[DiceDial] Iters   : {args.max_iterations}")
-    print(f"[DiceDial] ACL     : window={args.acl_window}, "
-          f"check_every={args.acl_check_interval} iters")
+    print(f"[DICE] Output directory : {output_dir}")
+    print(f"[DICE] Environments     : {env_cfg.scene.num_envs}")
+    print(f"[DICE] Rollout length   : {agent_cfg.num_steps_per_env}")
+    print(f"[DICE] Target iteration : {args.max_iterations}")
+    print(f"[DICE] Remaining        : {remaining_iterations}")
 
-    # ---------------------------------------------------------------- training loop
-    completed_iters = 0
-    chunk_size = args.acl_check_interval
-
-    with contextlib.suppress(KeyboardInterrupt):
-        while completed_iters < args.max_iterations:
-            this_chunk = min(chunk_size, args.max_iterations - completed_iters)
-
+    interrupted = False
+    try:
+        if remaining_iterations > 0:
             runner.learn(
-                num_learning_iterations=this_chunk,
-                init_at_random_ep_len=(completed_iters == 0),
+                num_learning_iterations=remaining_iterations,
+                init_at_random_ep_len=not bool(args.resume),
             )
-            completed_iters += this_chunk
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\n[DICE] Training interrupted. Saving the current policy.")
+    finally:
+        final_checkpoint = output_dir / "model_final.pt"
+        runner.save(str(final_checkpoint))
+        env.close()
 
-            # Check and possibly advance the ACL.
-            log = unwrapped.extras.get("log", {})
-            advanced = acl.step(log, runner.it)
-
-            if advanced:
-                # Save the model when the curriculum advances so we can
-                # inspect performance at each level independently.
-                level_name = acl.current_level["name"].replace(" ", "_")
-                ckpt_path = output_dir / f"model_acl_{level_name}.pt"
-                runner.save(str(ckpt_path))
-                acl_state_path = ckpt_path.with_suffix(".acl.json")
-                acl_state_path.write_text(json.dumps(acl.state_dict(), indent=2))
-                print(f"[DiceDial] ACL checkpoint saved: {ckpt_path}")
-
-    # ---------------------------------------------------------------- final save
-    final_model = output_dir / "model_final.pt"
-    runner.save(str(final_model))
-    acl_final = output_dir / "model_final.acl.json"
-    acl_final.write_text(json.dumps(acl.state_dict(), indent=2))
-
-    env.close()
-    print(f"[DiceDial] Training complete.  Model: {final_model}")
+    status = "interrupted" if interrupted else "complete"
+    print(f"[DICE] Training {status}. Checkpoint: {final_checkpoint}")
 
 
 if __name__ == "__main__":
