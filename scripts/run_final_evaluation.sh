@@ -16,8 +16,7 @@ python scripts/evaluate_rsl.py \
   --episodes "$EPISODES" \
   --num_envs "$NUM_ENVS" \
   --seed 2026 \
-  --output evaluation/nominal \
-  --headless
+  --output evaluation/nominal
 
 python scripts/evaluate_rsl.py \
   --task DICE-Shadow-Robust-v0 \
@@ -25,8 +24,7 @@ python scripts/evaluate_rsl.py \
   --episodes "$EPISODES" \
   --num_envs "$NUM_ENVS" \
   --seed 2027 \
-  --output evaluation/robust \
-  --headless
+  --output evaluation/robust
 
 python - <<'PY'
 import json

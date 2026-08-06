@@ -57,7 +57,9 @@ There is no wrong-face penalty. The completion bonus is deliberately much larger
 
 ## Installation
 
-Use the Python environment supplied by your Isaac Lab installation. RSL-RL should be installed through that Isaac Lab environment so its compatible version is used.
+Use the Python environment supplied by your Isaac Lab installation. RSL-RL should be installed through Isaac Lab so the compatible dependency is selected. Do not install an unpinned `rsl-rl-lib` afterward, because pip may replace the CUDA-enabled PyTorch build chosen by Isaac Lab.
+
+For Google Colab, use `DICE_colab_workflow.ipynb`. It creates an isolated Python 3.12 environment, installs Isaac Sim 6.0.1, restores the Linux x86-64 PyTorch CUDA-12.8 build, and selectively installs Isaac Lab's RSL-RL integration without the unrelated imitation-learning extras.
 
 ```bash
 cd DICE
@@ -77,8 +79,7 @@ python scripts/train_rsl.py \
   --task DICE-Shadow-Train-v0 \
   --num_envs 2048 \
   --max_iterations 10000 \
-  --run_name final \
-  --headless
+  --run_name final
 ```
 
 The default RSL-RL setup is the official Shadow Hand PPO baseline:
@@ -112,8 +113,7 @@ Resume toward the same total iteration target with:
 python scripts/train_rsl.py \
   --resume outputs/DICE/<run>/model_5000.pt \
   --max_iterations 10000 \
-  --run_name resumed \
-  --headless
+  --run_name resumed
 ```
 
 ## Evaluate
@@ -126,8 +126,7 @@ python scripts/evaluate_rsl.py \
   --checkpoint outputs/DICE/<run>/model_final.pt \
   --episodes 500 \
   --num_envs 256 \
-  --output evaluation/nominal \
-  --headless
+  --output evaluation/nominal
 ```
 
 Held-out mass/friction evaluation:
@@ -138,8 +137,7 @@ python scripts/evaluate_rsl.py \
   --checkpoint outputs/DICE/<run>/model_final.pt \
   --episodes 500 \
   --num_envs 256 \
-  --output evaluation/robust \
-  --headless
+  --output evaluation/robust
 ```
 
 Run both with:
