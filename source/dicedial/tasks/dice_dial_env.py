@@ -247,6 +247,9 @@ class DiceEnv(InHandManipulationEnv):
         self.last_out_of_reach[env_ids] = False
         self.last_completed_face[env_ids] = 0
         self.sequence_index[env_ids] = 0
+        self.last_alignment[env_ids] = target_face_alignment(
+            self.object_rot[env_ids], self.target_faces[env_ids]
+        )
 
     def _reset_target_pose(self, env_ids):
         env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
