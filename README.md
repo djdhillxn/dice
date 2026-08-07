@@ -1,26 +1,46 @@
-# DICE
+# DICE — Direct Terminal Workflow & Architecture
 
-**DICE** trains a Shadow Hand to reorient a held die to a requested numbered face and then continue through new commands without releasing the object.
+**DICE** trains a Shadow Hand to reorient a held die in-hand to a requested numbered face and continue through new commands sequentially without releasing the object.
 
-The repository intentionally has one main training path:
+All workflows run **directly from the terminal using Python scripts**.
 
-- Isaac Lab's existing direct Shadow Hand environment
-- Isaac Lab's stock instanceable DexCube during training
-- RSL-RL PPO using the official Shadow Hand network and optimizer defaults
-- the complete final task from the first transition
-- no curriculum and no alternate training path
+---
 
-## Task
+## 1. Terminal Workflow Overview
 
-At each command, the policy receives a requested face from 1 through 6. A command succeeds when all of the following remain true for 20 consecutive control steps:
+| Script | Purpose | CLI Command Example |
+|---|---|---|
+| `scripts/train_rsl.py` | Primary RSL-RL PPO training with live terminal progress bar & metrics | `python scripts/train_rsl.py --task DICE-Shadow-Train-v0 --num_envs 2048 --max_iterations 10000 --run_name strong_run` |
+| `scripts/evaluate_rsl.py` | Nominal or robust evaluation with progress bar & JSON/CSV outputs | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/DICE/<run>/model_final.pt --episodes 500` |
+| `scripts/run_final_evaluation.sh` | Runs both nominal and robust evaluations and generates `final_summary.json` | `bash scripts/run_final_evaluation.sh outputs/DICE/<run>/model_final.pt 500 256` |
+| `scripts/play_rsl.py` | Renders continuous 6-face sequence (`1 -> 6 -> 3 -> 5 -> 2 -> 4`) | `python scripts/play_rsl.py --task DICE-Shadow-Play-v0 --checkpoint outputs/DICE/<run>/model_final.pt --output videos/DICE` |
+| `scripts/annotate_video.py` | Overlays live telemetry metrics (target, top face, alignment, hold) onto rendered MP4 | `python scripts/annotate_video.py --video videos/DICE/raw/DICE.mp4 --metrics videos/DICE/video_metrics.csv --output videos/DICE/annotated.mp4` |
 
-- requested face is within **16 degrees** of world up
-- cube remains within `0.12 m` of the in-hand reference position
-- cube angular speed is at most `1.25 rad/s`
+---
 
-After success, a different face is selected immediately without resetting the hand or cube.
+## 2. Theoretical Analysis & Reward Design
 
-## Environments
+### Why Static Alignment Fails (The "Loitering" Problem)
+In naive setups, policies receive a static posture reward proportional to how close the requested face is to pointing upward. For example, if a die is held at 45 degrees, the static alignment reward gives a constant positive signal every control step. Over a 24-second episode (1,440 steps), sitting stationary at 45 degrees yields **hundreds of reward points** for doing nothing! If the policy tries to flip the die further, it risks dropping it (-50 penalty). Consequently, the policy falls into a **local minimum of loitering indefinitely** without ever attempting to complete commands.
+
+### Solutions Implemented
+
+1. **Potential-Based Progress Reward (Delta Alignment)**:
+   $$\text{Reward}_{\text{progress}} = c_{\text{progress}} \cdot (\text{alignment}_t - \text{alignment}_{t-1})$$
+   - Staying stationary ($\text{alignment}_t = \text{alignment}_{t-1}$) yields **zero** progress reward. Loitering is completely unrewarded.
+   - Rotating *toward* the target face yields positive progress reward.
+   - Rotating *away* yields negative reward.
+
+2. **Continuous Hold Progress Shaping**:
+   - Rewards climbing toward the 20-step hold gate smoothly while inside the 16-degree success zone:
+     $$\text{Reward}_{\text{hold}} = c_{\text{hold}} \cdot \frac{\text{hold\_counter}}{\text{hold\_steps}}$$
+
+3. **Command Completion Bonus (`+250`)**:
+   - Because loitering earns zero points, completing commands to receive the `+250` success bonus is the **primary driver** of total episode return.
+
+---
+
+## 3. Environments
 
 | Environment | Purpose | Object | Randomization |
 |---|---|---|---|
@@ -29,159 +49,61 @@ After success, a different face is selected immediately without resetting the ha
 | `DICE-Shadow-Robust-v0` | Held-out robustness evaluation | stock instanceable DexCube | mass and friction ±20% |
 | `DICE-Shadow-Play-v0` | Six-command video | local numbered die | none |
 
-## Observation and action spaces
+---
 
-The action is Isaac Lab's inherited 20-dimensional Shadow Hand joint-target action.
+## 4. Observation Space (174 Dimensions)
 
-The policy observation has 165 dimensions:
+The action space is Isaac Lab's 20-dimensional continuous Shadow Hand joint targets.
 
-- stock Shadow Hand full observation: 157
-- requested-face one-hot: 6
-- hold progress: 1
-- requested-face alignment with world up: 1
+The policy receives a **174-dimensional** observation space:
 
-Alignment is computed directly from the current cube quaternion and current command whenever observations are constructed. It is not copied from a reward-side cache.
+- **Stock Shadow Hand full observation** (157 dims): Joint positions, velocities, hand pose, object pose, object velocities.
+- **Requested face one-hot** (6 dims): One-hot encoding of target face 1..6.
+- **Hold progress** (1 dim): Normalized hold counter `hold_counter / 20`.
+- **Target face alignment** (1 dim): Scalar dot product of commanded face normal with world UP `(0,0,1)`.
+- **Commanded face normal in world frame** (3 dims): 3D unit vector $[N_x, N_y, N_z]$.
+- **Current top face normal in world frame** (3 dims): 3D unit vector $[n_x, n_y, n_z]$.
+- **Rotation axis error vector** (3 dims): Cross product $\vec{n} \times \vec{N}$ (instantaneous 3D rotation axis required to align the faces).
 
-## Reward
+---
 
-The reward contains only terms needed for the task:
+## 5. RSL-RL PPO Configuration
 
-- dense requested-face alignment
-- cube-to-palm position retention
-- angular settling only when the requested face is already within 30 degrees of world up
-- small action penalty
-- `+250` command-completion bonus
-- `-50` drop penalty
+- **Rollout Length**: `num_steps_per_env = 64` (provides a long credit assignment horizon across simulation steps).
+- **Optimizer**: Adam with adaptive KL learning rate schedule (`desired_kl = 0.016`, initial LR `5e-4`).
+- **Network**: Shared depth `[512, 512, 256, 128]` with ELU activations and observation normalization.
+- **Discount & GAE**: `gamma = 0.99`, `lambda = 0.95`.
 
-There is no wrong-face penalty. The completion bonus is deliberately much larger than the dense reward so the policy cannot profit by remaining just below the hold threshold.
+---
 
-## Installation
+## 6. Usage Examples
 
-Use the Python environment supplied by your Isaac Lab installation. RSL-RL should be installed through Isaac Lab so the compatible dependency is selected. Do not install an unpinned `rsl-rl-lib` afterward, because pip may replace the CUDA-enabled PyTorch build chosen by Isaac Lab.
-
-For Google Colab, use `DICE_colab_workflow.ipynb`. It creates an isolated Python 3.12 environment, installs Isaac Sim 6.0.1, restores the Linux x86-64 PyTorch CUDA-12.8 build, and selectively installs Isaac Lab's RSL-RL integration without the unrelated imitation-learning extras.
-
-```bash
-cd DICE
-pip install -e .
-```
-
-For the optional OpenCV overlay:
-
-```bash
-pip install -e ".[video]"
-```
-
-## Train once
-
+### Training
 ```bash
 python scripts/train_rsl.py \
   --task DICE-Shadow-Train-v0 \
   --num_envs 2048 \
   --max_iterations 10000 \
-  --run_name final
+  --run_name strong_run
 ```
 
-The default RSL-RL setup is the official Shadow Hand PPO baseline:
-
-- 16 steps per environment per update
-- 10,000 maximum iterations
-- checkpoint every 250 iterations
-- actor and critic: `512 → 512 → 256 → 128`, ELU
-- normalized actor and critic observations
-- PPO clip `0.2`
-- five learning epochs and four minibatches
-- learning rate `5e-4` with adaptive KL schedule
-- desired KL `0.016`
-- `gamma=0.99`, `lambda=0.95`
-
-Outputs are written under:
-
-```text
-outputs/DICE/<timestamp>_<run_name>/
-```
-
-The explicit final checkpoint is:
-
-```text
-model_final.pt
-```
-
-Resume toward the same total iteration target with:
-
+### Evaluation
 ```bash
-python scripts/train_rsl.py \
-  --resume outputs/DICE/<run>/model_5000.pt \
-  --max_iterations 10000 \
-  --run_name resumed
+bash scripts/run_final_evaluation.sh outputs/DICE/<timestamp>_strong_run/model_final.pt 500 256
 ```
 
-## Evaluate
-
-Nominal evaluation:
-
-```bash
-python scripts/evaluate_rsl.py \
-  --task DICE-Shadow-Eval-v0 \
-  --checkpoint outputs/DICE/<run>/model_final.pt \
-  --episodes 500 \
-  --num_envs 256 \
-  --output evaluation/nominal
-```
-
-Held-out mass/friction evaluation:
-
-```bash
-python scripts/evaluate_rsl.py \
-  --task DICE-Shadow-Robust-v0 \
-  --checkpoint outputs/DICE/<run>/model_final.pt \
-  --episodes 500 \
-  --num_envs 256 \
-  --output evaluation/robust
-```
-
-Run both with:
-
-```bash
-bash scripts/run_final_evaluation.sh outputs/DICE/<run>/model_final.pt
-```
-
-The evaluator writes:
-
-- `episodes.csv`
-- `summary.json`
-- overall command success rate
-- drop rate
-- median command latency
-- mean, median, and maximum commands per episode
-- success rate for each requested face
-
-## Render the final video
-
+### Rendering Video
 ```bash
 python scripts/play_rsl.py \
   --task DICE-Shadow-Play-v0 \
-  --checkpoint outputs/DICE/<run>/model_final.pt \
+  --checkpoint outputs/DICE/<timestamp>_strong_run/model_final.pt \
   --output videos/DICE
 ```
 
-The play environment uses the deterministic sequence:
-
-```text
-1 → 6 → 3 → 5 → 2 → 4
-```
-
-It uses the numbered die only for presentation. No mass or friction randomization is active during rendering.
-
-Annotate the recorded MP4:
-
+### Annotating Video
 ```bash
 python scripts/annotate_video.py \
-  --video videos/DICE/raw/<recorded-file>.mp4 \
+  --video videos/DICE/raw/DICE.mp4 \
   --metrics videos/DICE/video_metrics.csv \
   --output videos/DICE/DICE_annotated.mp4
 ```
-
-## Recommended finish line
-
-Do not launch new training variants before inspecting the checkpoints produced by the first 10,000-iteration run. Select a checkpoint using frozen nominal evaluation, then confirm it under the held-out robustness environment and render the deterministic six-command video.

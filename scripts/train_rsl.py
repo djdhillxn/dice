@@ -117,16 +117,47 @@ def main():
     print(f"[DICE] Remaining        : {remaining_iterations}")
 
     interrupted = False
+    step_chunk = 50
+
     try:
-        if remaining_iterations > 0:
+        from tqdm import tqdm
+        pbar = tqdm(
+            total=args.max_iterations,
+            initial=completed_iterations,
+            desc="[DICE RSL-RL Training]",
+            unit="iter",
+            dynamic_ncols=True,
+        )
+    except ImportError:
+        pbar = None
+
+    try:
+        while completed_iterations < args.max_iterations:
+            chunk = min(step_chunk, args.max_iterations - completed_iterations)
             runner.learn(
-                num_learning_iterations=remaining_iterations,
-                init_at_random_ep_len=not bool(args.resume),
+                num_learning_iterations=chunk,
+                init_at_random_ep_len=(completed_iterations == 0 and not bool(args.resume)),
             )
+            completed_iterations += chunk
+
+            log = raw_env.unwrapped.extras.get("log", {})
+            metrics = {
+                "Cmds/Ep": f"{log.get('DICE/commands_in_active_episode', 0.0):.2f}",
+                "Align": f"{log.get('DICE/alignment', 0.0):.2f}",
+                "DropRate": f"{log.get('DICE/drop_rate_per_step', 0.0):.3f}",
+                "Hold": f"{log.get('DICE/hold_progress', 0.0):.2f}",
+            }
+            if pbar is not None:
+                pbar.update(chunk)
+                pbar.set_postfix(metrics)
+            else:
+                print(f"[DICE Iter {completed_iterations}/{args.max_iterations}] {metrics}")
     except KeyboardInterrupt:
         interrupted = True
-        print("\n[DICE] Training interrupted. Saving the current policy.")
+        print("\n[DICE] Training interrupted by user. Saving current checkpoint.")
     finally:
+        if pbar is not None:
+            pbar.close()
         final_checkpoint = output_dir / "model_final.pt"
         runner.save(str(final_checkpoint))
         env.close()

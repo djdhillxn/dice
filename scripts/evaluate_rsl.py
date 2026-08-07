@@ -102,6 +102,14 @@ def main():
     per_face_successes = np.zeros(6, dtype=np.int64)
     per_face_attempts = np.zeros(6, dtype=np.int64)
 
+    try:
+        from tqdm import tqdm
+        pbar = tqdm(total=args.episodes, desc="[DICE Evaluation]", unit="ep", dynamic_ncols=True)
+    except ImportError:
+        pbar = None
+
+    last_ep_count = 0
+
     while len(episode_rows) < args.episodes:
         with torch.inference_mode():
             actions = policy(observations)
@@ -200,8 +208,20 @@ def main():
             episode_returns[env_index] = 0.0
             episode_lengths[env_index] = 0
 
+        if pbar is not None and len(episode_rows) > last_ep_count:
+            added = len(episode_rows) - last_ep_count
+            last_ep_count = len(episode_rows)
+            pbar.update(added)
+            pbar.set_postfix({
+                "MeanCmds": f"{total_successes / max(len(episode_rows), 1):.2f}",
+                "DropRate": f"{total_drops / max(len(episode_rows), 1):.3f}",
+            })
+
         if hasattr(policy, "reset"):
             policy.reset(dones)
+
+    if pbar is not None:
+        pbar.close()
 
     frame = pd.DataFrame(episode_rows)
     frame.to_csv(output_dir / "episodes.csv", index=False)

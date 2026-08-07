@@ -14,7 +14,7 @@ from isaaclab_rl.rsl_rl import (
 class DicePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """RSL-RL configuration aligned with Isaac Lab's Shadow Hand baseline."""
 
-    num_steps_per_env = 16
+    num_steps_per_env = 64
     max_iterations = 10_000
     save_interval = 250
     experiment_name = "DICE"

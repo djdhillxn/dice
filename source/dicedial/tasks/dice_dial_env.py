@@ -7,7 +7,13 @@ import torch.nn.functional as functional
 
 from isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env import InHandManipulationEnv
 
-from dicedial.geometry import canonical_goal_quaternion, target_face_alignment, top_face
+from dicedial.geometry import (
+    FACE_NORMALS,
+    canonical_goal_quaternion,
+    rotate_vector_wxyz,
+    target_face_alignment,
+    top_face,
+)
 
 
 class DiceEnv(InHandManipulationEnv):
@@ -37,17 +43,23 @@ class DiceEnv(InHandManipulationEnv):
 
         all_envs = torch.arange(self.num_envs, device=self.device)
         self._assign_targets(all_envs, advance=False)
+        self.last_alignment.copy_(target_face_alignment(self.object_rot, self.target_faces))
 
     # ------------------------------------------------------------------
     # Observation
     # ------------------------------------------------------------------
 
     def compute_full_observations(self):
-        """Return the stock 157 features plus eight command features.
+        """Return stock 157 features plus 17 command and geometric orientation features.
 
-        The custom command block is deliberately small: the requested-face
-        one-hot, normalized hold progress, and the exact yaw-invariant
-        alignment scalar used by the reward.
+        Features (174 total):
+        - Stock Shadow Hand obs: 157
+        - Target face one-hot: 6
+        - Normalized hold progress: 1
+        - Target face alignment: 1
+        - Commanded face normal in world frame: 3
+        - Current top face normal in world frame: 3
+        - Rotation axis error vector (cross product): 3
         """
 
         base_observation = super().compute_full_observations()
@@ -56,12 +68,25 @@ class DiceEnv(InHandManipulationEnv):
         ).clamp(0.0, 1.0)
         alignment = target_face_alignment(self.object_rot, self.target_faces)
 
+        face_normals_dev = FACE_NORMALS.to(self.device)
+        commanded_local_normals = face_normals_dev[self.target_faces - 1]
+        commanded_world_normals = rotate_vector_wxyz(self.object_rot, commanded_local_normals)
+
+        current_top = top_face(self.object_rot)
+        top_local_normals = face_normals_dev[current_top - 1]
+        top_world_normals = rotate_vector_wxyz(self.object_rot, top_local_normals)
+
+        axis_error = torch.cross(top_world_normals, commanded_world_normals, dim=-1)
+
         return torch.cat(
             (
                 base_observation,
                 self.target_one_hot,
                 hold_progress.unsqueeze(-1),
                 alignment.unsqueeze(-1),
+                commanded_world_normals,
+                top_world_normals,
+                axis_error,
             ),
             dim=-1,
         )
@@ -85,8 +110,11 @@ class DiceEnv(InHandManipulationEnv):
             current_top_face = None
         out_of_reach = position_error >= self.cfg.fall_dist
 
-        normalized_alignment = ((alignment + 1.0) * 0.5).clamp(0.0, 1.0)
-        alignment_reward = self.cfg.alignment_scale * normalized_alignment.pow(self.cfg.alignment_power)
+        # Potential-based progress reward: rewards delta alignment toward target.
+        # Loitering statically yields 0 progress reward!
+        delta_alignment = alignment - self.last_alignment
+        progress_reward = self.cfg.alignment_scale * delta_alignment
+
         position_penalty = self.cfg.position_error_scale * position_error
 
         angular_gate = math.cos(math.radians(self.cfg.angular_penalty_gate_deg))
@@ -112,11 +140,19 @@ class DiceEnv(InHandManipulationEnv):
             torch.zeros_like(self.hold_counter),
         )
 
+        hold_progress = (
+            self.hold_counter.float() / max(float(self.cfg.hold_steps), 1.0)
+        ).clamp(0.0, 1.0)
+
+        # Continuous hold progress shaping rewards climbing toward the 20-step gate
+        hold_shaping = self.cfg.hold_progress_scale * hold_progress * hold_condition.float()
+
         success = self.hold_counter >= self.cfg.hold_steps
         success_reward = self.cfg.success_bonus * success.float()
 
         reward = (
-            alignment_reward
+            progress_reward
+            + hold_shaping
             + position_penalty
             + angular_penalty
             + action_penalty

@@ -103,18 +103,28 @@ def main():
     rows = []
     command_count = len(env_cfg.target_sequence)
 
+    try:
+        from tqdm import tqdm
+        pbar = tqdm(total=args.video_length, desc="[DICE Playback Rendering]", unit="step", dynamic_ncols=True)
+    except ImportError:
+        pbar = None
+
     for step in range(args.video_length):
         with torch.inference_mode():
             actions = policy(observations)
             observations, rewards, dones, extras = env.step(actions)
 
         commands_completed = int(_first(extras, "dice_commands_completed", 0))
+        target_f = int(_first(extras, "dice_target_face", 0))
+        top_f = int(_first(extras, "dice_top_face", 0))
+        align_v = float(_first(extras, "dice_alignment", 0.0))
+
         rows.append(
             {
                 "step": step,
-                "target_face": int(_first(extras, "dice_target_face", 0)),
-                "top_face": int(_first(extras, "dice_top_face", 0)),
-                "alignment": float(_first(extras, "dice_alignment", 0.0)),
+                "target_face": target_f,
+                "top_face": top_f,
+                "alignment": align_v,
                 "position_error": float(_first(extras, "dice_position_error", 0.0)),
                 "hold_progress": float(_first(extras, "dice_hold_progress", 0.0)),
                 "commands_completed": commands_completed,
@@ -122,11 +132,23 @@ def main():
             }
         )
 
+        if pbar is not None:
+            pbar.update(1)
+            pbar.set_postfix({
+                "Target": target_f,
+                "Top": top_f,
+                "Align": f"{align_v:.2f}",
+                "Cmds": commands_completed,
+            })
+
         if hasattr(policy, "reset"):
             policy.reset(dones)
 
         if commands_completed >= command_count or bool(dones[0].item()):
             break
+
+    if pbar is not None:
+        pbar.close()
 
     metrics_path = output_dir / "video_metrics.csv"
     pd.DataFrame(rows).to_csv(metrics_path, index=False)

@@ -90,7 +90,7 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
     * requested-face alignment with world up: 1
     """
 
-    observation_space = 165
+    observation_space = 174
     action_space = 20
     state_space = 0
     obs_type = "full"
@@ -116,12 +116,12 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
     success_angular_speed = 1.25
     hold_steps = 20
 
-    # Compact reward.  The completion bonus intentionally dominates dense
-    # near-target reward so the policy prefers finishing and accepting a new
-    # command over loitering just below the hold threshold.
-    alignment_scale = 1.0
-    alignment_power = 4.0
-    position_error_scale = -5.0
+    # Progress-based reward shaping.
+    # alignment_scale multiplies step-to-step delta alignment (progress toward target).
+    # Static loitering gets ZERO progress reward.
+    alignment_scale = 10.0
+    hold_progress_scale = 0.5
+    position_error_scale = -2.0
     angular_speed_scale = -0.02
     angular_penalty_gate_deg = 30.0
     action_penalty_scale = -0.0002
