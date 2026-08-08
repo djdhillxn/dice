@@ -136,6 +136,10 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
     # frozen-policy evaluation and presentation.
     emit_step_metrics = False
 
+    # Goal markers are presentation-only. Updating thousands of marker poses is
+    # unnecessary in headless training/evaluation and can dominate startup/reset.
+    visualize_goal_marker = False
+
     # Low-pass joint targets. The inherited full-observation Shadow Hand uses
     # 1.0, but precise settling benefits from the 0.3 smoothing used by Isaac
     # Lab's OpenAI-style Shadow Hand configuration.
@@ -208,4 +212,5 @@ class DicePlayEnvCfg(DiceBaseEnvCfg):
     max_commands_per_episode = 6
     episode_length_s = 40.0
     emit_step_metrics = True
+    visualize_goal_marker = True
     events = None

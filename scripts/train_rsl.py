@@ -1,10 +1,41 @@
 """Train DICE once on the complete final task with RSL-RL PPO."""
 
 import argparse
+import importlib.metadata as package_metadata
 import json
 import sys
 from datetime import datetime
 from pathlib import Path
+
+
+EXPECTED_NUMPY = "1.26.0"
+
+
+def require_compatible_numpy():
+    """Fail before Isaac Sim starts if pip has replaced Isaac Sim's NumPy."""
+
+    try:
+        numpy_version = package_metadata.version("numpy")
+    except package_metadata.PackageNotFoundError:
+        raise SystemExit(
+            "[DICE] NumPy is not installed. Activate the 'dice' Conda environment "
+            "and reinstall the project before launching Isaac Sim."
+        )
+
+    if numpy_version != EXPECTED_NUMPY:
+        raise SystemExit(
+            "[DICE] Refusing to launch Isaac Sim with NumPy "
+            f"{numpy_version}. This DICE/Isaac Sim 5.1 environment requires "
+            f"numpy=={EXPECTED_NUMPY}. Repair it with:\n\n"
+            "  python -m pip uninstall -y opencv-python opencv-contrib-python "
+            "opencv-python-headless opencv-contrib-python-headless\n"
+            "  python -m pip install --upgrade 'numpy==1.26.0' "
+            "'opencv-python-headless==4.11.0.86'\n"
+            "  python -m pip install -e '.[video]'\n"
+        )
+
+
+require_compatible_numpy()
 
 from isaaclab.app import AppLauncher
 
@@ -53,6 +84,20 @@ from dicedial.agents.rsl_rl_ppo_cfg import (
 )
 
 
+def write_metadata(path, metadata):
+    path.write_text(json.dumps(metadata, indent=2, default=str))
+
+
+def startup_log(output_dir, message):
+    """Print and persist startup milestones so a launch stall has a location."""
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] [DICE STARTUP] {message}"
+    print(line, flush=True)
+    with (output_dir / "startup.log").open("a", encoding="utf-8") as stream:
+        stream.write(line + "\n")
+
+
 def main():
     device = args.device or "cuda:0"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -76,95 +121,111 @@ def main():
     env_cfg.seed = args.seed
     env_cfg.log_dir = str(output_dir)
 
-    raw_env = gym.make(args.task, cfg=env_cfg)
-    env = RslRlVecEnvWrapper(raw_env, clip_actions=agent_cfg.clip_actions)
-
-    runner = OnPolicyRunner(
-        env,
-        agent_cfg.to_dict(),
-        log_dir=str(output_dir),
-        device=agent_cfg.device,
-    )
-
-    if args.resume:
-        checkpoint = compatible_checkpoint_path(Path(args.resume).expanduser().resolve())
-        runner.load(checkpoint)
-        print(f"[DICE] Resumed from: {checkpoint}")
-
-    completed_iterations = int(getattr(runner, "current_learning_iteration", 0))
-    remaining_iterations = max(args.max_iterations - completed_iterations, 0)
-
+    metadata_path = output_dir / "run.json"
     metadata = {
         "project": "DICE",
+        "status": "initializing",
         "task": args.task,
         "seed": args.seed,
         "device": device,
         "num_envs": int(env_cfg.scene.num_envs),
         "num_steps_per_env": int(agent_cfg.num_steps_per_env),
         "max_iterations": int(args.max_iterations),
-        "completed_iterations_at_start": completed_iterations,
-        "remaining_iterations": remaining_iterations,
         "resume": args.resume,
         "command": " ".join(sys.argv),
+        "numpy": package_metadata.version("numpy"),
         "agent": agent_cfg.to_dict(),
     }
-    (output_dir / "run.json").write_text(json.dumps(metadata, indent=2, default=str))
+    write_metadata(metadata_path, metadata)
 
-    print(f"[DICE] Output directory : {output_dir}")
-    print(f"[DICE] Environments     : {env_cfg.scene.num_envs}")
-    print(f"[DICE] Rollout length   : {agent_cfg.num_steps_per_env}")
-    print(f"[DICE] Target iteration : {args.max_iterations}")
-    print(f"[DICE] Remaining        : {remaining_iterations}")
+    startup_log(output_dir, f"Output directory: {output_dir}")
+    startup_log(output_dir, f"Creating Gym environment '{args.task}' with {env_cfg.scene.num_envs} envs...")
+    raw_env = gym.make(args.task, cfg=env_cfg)
+    startup_log(output_dir, "Gym environment created.")
+
+    startup_log(output_dir, "Creating RSL-RL wrapper (this performs the initial environment reset)...")
+    env = RslRlVecEnvWrapper(raw_env, clip_actions=agent_cfg.clip_actions)
+    startup_log(output_dir, "RSL-RL wrapper/reset complete.")
+
+    startup_log(output_dir, "Constructing OnPolicyRunner and PPO storage...")
+    runner = OnPolicyRunner(
+        env,
+        agent_cfg.to_dict(),
+        log_dir=str(output_dir),
+        device=agent_cfg.device,
+    )
+    startup_log(output_dir, "OnPolicyRunner constructed.")
+
+    # RSL-RL already records its own repository diff. Add the DICE repository
+    # as well so every run captures the exact local code state used for training.
+    if hasattr(runner, "add_git_repo_to_log"):
+        runner.add_git_repo_to_log(__file__)
+
+    resumed = False
+    if args.resume:
+        checkpoint = compatible_checkpoint_path(Path(args.resume).expanduser().resolve())
+        runner.load(checkpoint)
+        # RSL-RL checkpoints store the last completed zero-based iteration. Start
+        # from the following iteration rather than repeating the checkpoint step.
+        runner.current_learning_iteration = int(runner.current_learning_iteration) + 1
+        resumed = True
+        startup_log(output_dir, f"Resumed from: {checkpoint}")
+
+    start_iteration = int(getattr(runner, "current_learning_iteration", 0))
+    remaining_iterations = max(args.max_iterations - start_iteration, 0)
+
+    metadata.update(
+        {
+            "status": "runner_ready",
+            "start_iteration": start_iteration,
+            "remaining_iterations": remaining_iterations,
+        }
+    )
+    write_metadata(metadata_path, metadata)
+
+    print(f"[DICE] Output directory : {output_dir}", flush=True)
+    print(f"[DICE] Environments     : {env_cfg.scene.num_envs}", flush=True)
+    print(f"[DICE] Rollout length   : {agent_cfg.num_steps_per_env}", flush=True)
+    print(f"[DICE] Target iteration : {args.max_iterations}", flush=True)
+    print(f"[DICE] Remaining        : {remaining_iterations}", flush=True)
 
     interrupted = False
-    step_chunk = 10
+    failed = False
+    final_checkpoint = output_dir / "model_final.pt"
 
     try:
-        from tqdm import tqdm
-        pbar = tqdm(
-            total=args.max_iterations,
-            initial=completed_iterations,
-            desc="[DICE RSL-RL Training]",
-            unit="iter",
-            dynamic_ncols=True,
-        )
-    except ImportError:
-        pbar = None
-
-    try:
-        while completed_iterations < args.max_iterations:
-            chunk = min(step_chunk, args.max_iterations - completed_iterations)
-            runner.learn(
-                num_learning_iterations=chunk,
-                init_at_random_ep_len=(completed_iterations == 0 and not bool(args.resume)),
+        if remaining_iterations > 0:
+            metadata["status"] = "training"
+            write_metadata(metadata_path, metadata)
+            startup_log(
+                output_dir,
+                "Starting RSL-RL learning loop. Native RSL-RL metrics will print after every PPO iteration.",
             )
-            completed_iterations += chunk
-
-            log = raw_env.unwrapped.extras.get("log", {})
-            metrics = {
-                "Cmds/Ep": f"{log.get('DICE/commands_in_active_episode', 0.0):.2f}",
-                "Align": f"{log.get('DICE/alignment', 0.0):.2f}",
-                "DropRate": f"{log.get('DICE/drop_rate_per_step', 0.0):.3f}",
-                "Hold": f"{log.get('DICE/hold_progress', 0.0):.2f}",
-                "AngVel": f"{log.get('DICE/angular_speed', 0.0):.2f}",
-            }
-            if pbar is not None:
-                pbar.update(chunk)
-                pbar.set_postfix(metrics)
-            else:
-                print(f"[DICE Iter {completed_iterations}/{args.max_iterations}] {metrics}")
+            runner.learn(
+                num_learning_iterations=remaining_iterations,
+                init_at_random_ep_len=(start_iteration == 0 and not resumed),
+            )
+        else:
+            startup_log(output_dir, "Target iteration already reached; no PPO updates required.")
     except KeyboardInterrupt:
         interrupted = True
-        print("\n[DICE] Training interrupted by user. Saving current checkpoint.")
+        print("\n[DICE] Training interrupted by user. Saving current checkpoint.", flush=True)
+    except Exception:
+        failed = True
+        metadata["status"] = "failed"
+        metadata["last_iteration"] = int(getattr(runner, "current_learning_iteration", 0))
+        write_metadata(metadata_path, metadata)
+        raise
     finally:
-        if pbar is not None:
-            pbar.close()
-        final_checkpoint = output_dir / "model_final.pt"
         runner.save(str(final_checkpoint))
         env.close()
 
-    status = "interrupted" if interrupted else "complete"
-    print(f"[DICE] Training {status}. Checkpoint: {final_checkpoint}")
+    status = "interrupted" if interrupted else "failed" if failed else "complete"
+    metadata["status"] = status
+    metadata["last_iteration"] = int(getattr(runner, "current_learning_iteration", 0))
+    metadata["final_checkpoint"] = str(final_checkpoint)
+    write_metadata(metadata_path, metadata)
+    print(f"[DICE] Training {status}. Checkpoint: {final_checkpoint}", flush=True)
 
 
 if __name__ == "__main__":

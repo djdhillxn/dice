@@ -18,6 +18,7 @@ class DicePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 10_000
     save_interval = 250
     experiment_name = "DICE"
+    logger = "tensorboard"
     clip_actions = 1.0
 
     policy = RslRlPpoActorCriticCfg(

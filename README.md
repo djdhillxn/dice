@@ -6,68 +6,87 @@ All workflows run **directly from the terminal using Python scripts**.
 
 ## Google Compute Engine / Conda setup
 
-The GCE training workflow is intended to run from an SSH terminal in **headless** mode. Do not omit `--headless` from training or evaluation commands on the VM.
+The GCE workflow uses the existing Conda environment named **`dice`** and should be launched from an SSH terminal in **headless** mode.
 
-### Activate the existing Conda environment
-
-First check the environments that actually exist on the VM:
-
-```bash
-conda env list
-```
-
-If the existing environment is named `Hotpot`:
-
-```bash
-conda activate Hotpot
-```
-
-If the VM instead shows the DICE environment used in the current logs (`.../envs/dice/...`), activate that environment instead:
+### Activate and verify the DICE environment
 
 ```bash
 conda activate dice
+cd ~/projects/dice
+python --version
+which python
 ```
 
-Then install or refresh this repository in editable mode:
+The current repository does not contain an `environment.yml` / `environment.yaml`; the project-level Python dependencies are defined in `pyproject.toml`. Install or refresh the repository with:
 
 ```bash
-cd ~/projects/dice
 python -m pip install -e .
 ```
 
-For the optional video dependencies:
+For video annotation support:
 
 ```bash
 python -m pip install -e ".[video]"
 ```
 
-### Create or update from an environment YAML
+DICE pins `numpy==1.26.0` because Isaac Sim 5.1 requires that NumPy version, and pins `opencv-python-headless==4.11.0.86` because the VM does not need OpenCV GUI support. Do not install the latest OpenCV 5 wheel in this Isaac environment: on Python 3.11 it can require NumPy 2 and replace Isaac Sim's compatible NumPy.
 
-This repository currently does **not** contain an `environment.yml` / `environment.yaml`. If one is added later, create an environment with:
-
-```bash
-conda env create -n Hotpot -f environment.yml
-```
-
-To update the already-created environment after the YAML changes:
+If a previous editable install already upgraded NumPy to 2.x, repair the active `dice` environment once:
 
 ```bash
-conda env update -n Hotpot -f environment.yml --prune
-conda activate Hotpot
-python -m pip install -e .
+python -m pip uninstall -y \
+  opencv-python opencv-contrib-python \
+  opencv-python-headless opencv-contrib-python-headless
+
+python -m pip install --upgrade \
+  "numpy==1.26.0" \
+  "opencv-python-headless==4.11.0.86"
+
+python -m pip install -e ".[video]"
+python -m pip check
+
+python - <<'PY'
+import cv2
+import numpy
+import sqlite3
+
+print("numpy:", numpy.__version__)
+print("opencv:", cv2.__version__)
+print("sqlite:", sqlite3.sqlite_version)
+PY
 ```
 
-Replace `Hotpot` with `dice` if `dice` is the environment that actually exists on the VM. Changes only to `pyproject.toml` do not require recreating the Conda environment; rerun `python -m pip install -e .`.
+The training script also refuses to start Isaac Sim if NumPy is not exactly `1.26.0`, so a future `pip install` cannot silently launch an unsupported runtime.
+
+### If an environment YAML is added later
+
+Create it under the same environment name:
+
+```bash
+conda env create -n dice -f environment.yml
+conda activate dice
+python -m pip install -e ".[video]"
+```
+
+If that YAML is changed later, update the existing environment rather than creating another one:
+
+```bash
+conda env update -n dice -f environment.yml --prune
+conda activate dice
+python -m pip install -e ".[video]"
+```
+
+Changes only to `pyproject.toml` do not require recreating the Conda environment; rerun the editable install.
 
 ### Fix `CXXABI_1.3.15` / `libstdc++.so.6` on Ubuntu 22.04
 
-If Isaac Sim reports that `/lib/x86_64-linux-gnu/libstdc++.so.6` does not provide `CXXABI_1.3.15`, first verify the Conda environment's C++ runtime:
+If Isaac Sim reports that `/lib/x86_64-linux-gnu/libstdc++.so.6` does not provide `CXXABI_1.3.15`, verify the Conda runtime:
 
 ```bash
 strings "$CONDA_PREFIX/lib/libstdc++.so.6" | grep CXXABI_1.3.15
 ```
 
-If that symbol is missing, install a current Conda runtime:
+If that symbol is missing:
 
 ```bash
 conda install -y -c conda-forge "libstdcxx-ng>=13" "libgcc-ng>=13"
@@ -83,7 +102,7 @@ python -c "import sqlite3; print('sqlite OK:', sqlite3.sqlite_version)"
 ### Headless GCE training
 
 ```bash
-python scripts/train_rsl.py \
+python -u scripts/train_rsl.py \
   --task DICE-Shadow-Train-v0 \
   --num_envs 2048 \
   --max_iterations 10000 \
@@ -91,7 +110,36 @@ python scripts/train_rsl.py \
   --headless
 ```
 
-The repeated `sh: 1: zenity: not found` message is not a request to install `zenity` for training. On an SSH-only GCE session it usually means a GUI/message-box path was reached. Launch training and evaluation with `--headless` instead.
+`python -u` keeps terminal output unbuffered over SSH. The training script now prints and saves startup milestones before/after Gym creation, the RSL-RL wrapper reset, runner construction, and the PPO learning loop. If startup stalls, inspect the newest `outputs/DICE/<run>/startup.log` rather than guessing which layer is blocked.
+
+The repeated `sh: 1: zenity: not found` message is not a request to install `zenity` for headless training. Always use `--headless` on the VM.
+
+### Training artifacts and TensorBoard
+
+Every run writes to:
+
+```text
+outputs/DICE/<timestamp>_<run_name>/
+```
+
+The directory contains:
+
+- `run.json`: command, task, PPO configuration, environment count, rollout length, runtime status, and final checkpoint metadata.
+- `startup.log`: persisted launch-stage breadcrumbs for startup debugging.
+- `events.out.tfevents...`: TensorBoard scalars written by RSL-RL.
+- `model_*.pt`: periodic RSL-RL checkpoints (`save_interval = 250`).
+- `model_final.pt`: explicit final/interrupted checkpoint from the DICE launcher.
+- `git/*.diff`: repository state captured by RSL-RL on the first learning iteration, including DICE after the runner registers this repository.
+
+RSL-RL logs PPO losses, learning rate, mean policy noise, FPS/collection/learning time, reward, episode length, and every scalar under `extras["log"]`. DICE additionally records alignment, position and angular speed, all three success-gate rates, simultaneous-gate rate, hold-counter tails, command/drop statistics, every reward component, action magnitude/RMS, and action saturation.
+
+Start TensorBoard on the VM with:
+
+```bash
+tensorboard --logdir outputs/DICE --host 127.0.0.1 --port 6006
+```
+
+Forward port `6006` over SSH from your local machine and open `http://localhost:6006`. RSL-RL also prints its native detailed PPO summary after every learning iteration, so no custom chunked `runner.learn()` loop is required.
 
 ---
 
@@ -99,7 +147,7 @@ The repeated `sh: 1: zenity: not found` message is not a request to install `zen
 
 | Script | Purpose | CLI Command Example |
 |---|---|---|
-| `scripts/train_rsl.py` | Primary RSL-RL PPO training with live terminal progress bar & metrics | `python scripts/train_rsl.py --task DICE-Shadow-Train-v0 --num_envs 2048 --max_iterations 10000 --run_name strong_run` |
+| `scripts/train_rsl.py` | Primary RSL-RL PPO training with live terminal progress bar & metrics | `python -u scripts/train_rsl.py --task DICE-Shadow-Train-v0 --num_envs 2048 --max_iterations 10000 --run_name strong_run --headless` |
 | `scripts/evaluate_rsl.py` | Nominal or robust evaluation with progress bar & JSON/CSV outputs | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/DICE/<run>/model_final.pt --episodes 500` |
 | `scripts/run_final_evaluation.sh` | Runs both nominal and robust evaluations and generates `final_summary.json` | `bash scripts/run_final_evaluation.sh outputs/DICE/<run>/model_final.pt 500 256` |
 | `scripts/play_rsl.py` | Renders continuous 6-face sequence (`1 -> 6 -> 3 -> 5 -> 2 -> 4`) | `python scripts/play_rsl.py --task DICE-Shadow-Play-v0 --checkpoint outputs/DICE/<run>/model_final.pt --output videos/DICE` |
@@ -120,9 +168,10 @@ In naive setups, policies receive a static posture reward proportional to how cl
    - Rotating *toward* the target face yields positive progress reward.
    - Rotating *away* yields negative reward.
 
-2. **Continuous Hold Progress Shaping**:
-   - Rewards climbing toward the 20-step hold gate smoothly while inside the 16-degree success zone:
-     $$\text{Reward}_{\text{hold}} = c_{\text{hold}} \cdot \frac{\text{hold\_counter}}{\text{hold\_steps}}$$
+2. **Signed Hold Progress Shaping**:
+   - Rewards each new valid hold step and claws the accumulated shaping back if the consecutive hold breaks:
+     $$\text{Reward}_{\text{hold}} = c_{\text{hold}} \cdot \frac{h_t-h_{t-1}}{\text{hold\_steps}}$$
+   - A partial hold cannot be repeatedly farmed for positive return.
 
 3. **Command Completion Bonus (`+250`)**:
    - Because loitering earns zero points, completing commands to receive the `+250` success bonus is the **primary driver** of total episode return.
@@ -152,7 +201,7 @@ The policy receives a **174-dimensional** observation space:
 - **Target face alignment** (1 dim): Scalar dot product of commanded face normal with world UP `(0,0,1)`.
 - **Commanded face normal in world frame** (3 dims): 3D unit vector $[N_x, N_y, N_z]$.
 - **Current top face normal in world frame** (3 dims): 3D unit vector $[n_x, n_y, n_z]$.
-- **Rotation axis error vector** (3 dims): Cross product $\vec{n} \times \vec{N}$ (instantaneous 3D rotation axis required to align the faces).
+- **Rotation axis error vector** (3 dims): Cross product of the requested face normal with world-up (instantaneous rotation axis that moves the requested face toward the task target).
 
 ---
 

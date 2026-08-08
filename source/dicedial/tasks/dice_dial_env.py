@@ -208,6 +208,25 @@ class DiceEnv(InHandManipulationEnv):
         log["DICE/success_rate_per_step"] = success.float().mean()
         log["DICE/commands_in_active_episode"] = self.successes.float().mean()
         log["DICE/drop_rate_per_step"] = out_of_reach.float().mean()
+        log["DICE/gate_angle_rate"] = (alignment >= success_angle).float().mean()
+        log["DICE/gate_position_rate"] = (position_error <= self.cfg.success_position_tolerance).float().mean()
+        log["DICE/gate_angular_speed_rate"] = (angular_speed <= self.cfg.success_angular_speed).float().mean()
+        log["DICE/gate_all_rate"] = hold_condition.float().mean()
+        log["DICE/hold_ge_1_rate"] = (self.hold_counter >= 1).float().mean()
+        log["DICE/hold_ge_5_rate"] = (self.hold_counter >= 5).float().mean()
+        log["DICE/hold_ge_10_rate"] = (self.hold_counter >= 10).float().mean()
+        log["DICE/hold_ge_19_rate"] = (self.hold_counter >= 19).float().mean()
+        log["DICE/reward_alignment_progress"] = progress_reward.mean()
+        log["DICE/reward_hold_shaping"] = hold_shaping.mean()
+        log["DICE/reward_position"] = position_penalty.mean()
+        log["DICE/reward_angular"] = angular_penalty.mean()
+        log["DICE/reward_action"] = action_penalty.mean()
+        log["DICE/reward_success"] = success_reward.mean()
+        log["DICE/reward_drop"] = drop_penalty.mean()
+        log["DICE/reward_total"] = reward.mean()
+        log["DICE/action_mean_abs"] = self.actions.abs().mean()
+        log["DICE/action_rms"] = torch.sqrt(self.actions.square().mean())
+        log["DICE/action_saturation_rate"] = (self.actions.abs() >= 0.999).float().mean()
 
         if self.cfg.emit_step_metrics:
             # Cloned step-level tensors survive Isaac Lab's automatic reset and
@@ -319,8 +338,9 @@ class DiceEnv(InHandManipulationEnv):
         self.hold_counter[env_ids] = 0
         self.command_age_steps[env_ids] = 0
 
-        goal_positions = self.goal_pos + self.scene.env_origins
-        self.goal_markers.visualize(goal_positions, self.goal_rot)
+        if self.cfg.visualize_goal_marker:
+            goal_positions = self.goal_pos + self.scene.env_origins
+            self.goal_markers.visualize(goal_positions, self.goal_rot)
         self.reset_goal_buf[env_ids] = False
 
     # ------------------------------------------------------------------

@@ -12,13 +12,13 @@ license = {text = "MIT"}
 authors = [{name = "Dheeraj Dhillon"}]
 dependencies = [
   "gymnasium",
-  "numpy",
+  "numpy==1.26.0",
   "pandas",
   "tqdm",
 ]
 
 [project.optional-dependencies]
-video = ["opencv-python"]
+video = ["opencv-python-headless==4.11.0.86"]
 
 [tool.setuptools]
 package-dir = {"" = "source"}
