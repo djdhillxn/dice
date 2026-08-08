@@ -18,9 +18,11 @@ class DicePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 10_000
     save_interval = 250
     experiment_name = "DICE"
+    clip_actions = 1.0
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
+        init_noise_std=0.6,
+        noise_std_type="log",
         actor_obs_normalization=True,
         critic_obs_normalization=True,
         actor_hidden_dims=[512, 512, 256, 128],
@@ -32,7 +34,7 @@ class DicePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.005,
+        entropy_coef=0.0,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=5.0e-4,

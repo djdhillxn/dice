@@ -76,7 +76,12 @@ class DiceEnv(InHandManipulationEnv):
         top_local_normals = face_normals_dev[current_top - 1]
         top_world_normals = rotate_vector_wxyz(self.object_rot, top_local_normals)
 
-        axis_error = torch.cross(top_world_normals, commanded_world_normals, dim=-1)
+        world_up = torch.zeros_like(commanded_world_normals)
+        world_up[:, 2] = 1.0
+        # Minimal rotation axis that moves the requested face normal toward
+        # world-up.  The previous top-vs-commanded cross product rotated two
+        # body-fixed vectors and was not the task's orientation error.
+        axis_error = torch.cross(commanded_world_normals, world_up, dim=-1)
 
         return torch.cat(
             (
@@ -119,9 +124,10 @@ class DiceEnv(InHandManipulationEnv):
 
         angular_gate = math.cos(math.radians(self.cfg.angular_penalty_gate_deg))
         near_target = alignment >= angular_gate
+        angular_speed_excess = torch.relu(angular_speed - self.cfg.success_angular_speed)
         angular_penalty = (
             self.cfg.angular_speed_scale
-            * angular_speed
+            * angular_speed_excess.square()
             * near_target.float()
         )
 
@@ -134,6 +140,7 @@ class DiceEnv(InHandManipulationEnv):
             & (position_error <= self.cfg.success_position_tolerance)
             & (angular_speed <= self.cfg.success_angular_speed)
         )
+        previous_hold_counter = self.hold_counter.clone()
         self.hold_counter = torch.where(
             hold_condition,
             self.hold_counter + 1,
@@ -144,8 +151,15 @@ class DiceEnv(InHandManipulationEnv):
             self.hold_counter.float() / max(float(self.cfg.hold_steps), 1.0)
         ).clamp(0.0, 1.0)
 
-        # Continuous hold progress shaping rewards climbing toward the 20-step gate
-        hold_shaping = self.cfg.hold_progress_scale * hold_progress * hold_condition.float()
+        # Signed hold-progress shaping. Each valid step is rewarded, but losing
+        # a partial hold pays back the accumulated shaping, preventing a policy
+        # from farming repeated 1..19-step attempts without completing.
+        hold_delta = (self.hold_counter - previous_hold_counter).float()
+        hold_shaping = (
+            self.cfg.hold_progress_scale
+            * hold_delta
+            / max(float(self.cfg.hold_steps), 1.0)
+        )
 
         success = self.hold_counter >= self.cfg.hold_steps
         success_reward = self.cfg.success_bonus * success.float()

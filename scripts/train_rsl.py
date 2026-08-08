@@ -117,7 +117,7 @@ def main():
     print(f"[DICE] Remaining        : {remaining_iterations}")
 
     interrupted = False
-    step_chunk = 50
+    step_chunk = 10
 
     try:
         from tqdm import tqdm
@@ -146,6 +146,7 @@ def main():
                 "Align": f"{log.get('DICE/alignment', 0.0):.2f}",
                 "DropRate": f"{log.get('DICE/drop_rate_per_step', 0.0):.3f}",
                 "Hold": f"{log.get('DICE/hold_progress', 0.0):.2f}",
+                "AngVel": f"{log.get('DICE/angular_speed', 0.0):.2f}",
             }
             if pbar is not None:
                 pbar.update(chunk)

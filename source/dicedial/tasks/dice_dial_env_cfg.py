@@ -120,9 +120,12 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
     # alignment_scale multiplies step-to-step delta alignment (progress toward target).
     # Static loitering gets ZERO progress reward.
     alignment_scale = 10.0
-    hold_progress_scale = 0.5
+    # Reward signed changes in the consecutive hold counter. A valid hold step
+    # earns +2.0, while breaking a k-step partial hold claws back that progress.
+    hold_progress_scale = 40.0
     position_error_scale = -2.0
-    angular_speed_scale = -0.02
+    # Penalize squared angular-speed excess only near the requested face.
+    angular_speed_scale = -0.25
     angular_penalty_gate_deg = 30.0
     action_penalty_scale = -0.0002
     success_bonus = 250.0
@@ -132,6 +135,11 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
     # training logs remain active; detailed step metrics are enabled only for
     # frozen-policy evaluation and presentation.
     emit_step_metrics = False
+
+    # Low-pass joint targets. The inherited full-observation Shadow Hand uses
+    # 1.0, but precise settling benefits from the 0.3 smoothing used by Isaac
+    # Lab's OpenAI-style Shadow Hand configuration.
+    act_moving_average = 0.3
 
     # Nominal training/evaluation use the inherited stock DexCube and no
     # randomization.  Robust evaluation enables its own event configuration.
