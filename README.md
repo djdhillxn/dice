@@ -4,6 +4,95 @@
 
 All workflows run **directly from the terminal using Python scripts**.
 
+## Google Compute Engine / Conda setup
+
+The GCE training workflow is intended to run from an SSH terminal in **headless** mode. Do not omit `--headless` from training or evaluation commands on the VM.
+
+### Activate the existing Conda environment
+
+First check the environments that actually exist on the VM:
+
+```bash
+conda env list
+```
+
+If the existing environment is named `Hotpot`:
+
+```bash
+conda activate Hotpot
+```
+
+If the VM instead shows the DICE environment used in the current logs (`.../envs/dice/...`), activate that environment instead:
+
+```bash
+conda activate dice
+```
+
+Then install or refresh this repository in editable mode:
+
+```bash
+cd ~/projects/dice
+python -m pip install -e .
+```
+
+For the optional video dependencies:
+
+```bash
+python -m pip install -e ".[video]"
+```
+
+### Create or update from an environment YAML
+
+This repository currently does **not** contain an `environment.yml` / `environment.yaml`. If one is added later, create an environment with:
+
+```bash
+conda env create -n Hotpot -f environment.yml
+```
+
+To update the already-created environment after the YAML changes:
+
+```bash
+conda env update -n Hotpot -f environment.yml --prune
+conda activate Hotpot
+python -m pip install -e .
+```
+
+Replace `Hotpot` with `dice` if `dice` is the environment that actually exists on the VM. Changes only to `pyproject.toml` do not require recreating the Conda environment; rerun `python -m pip install -e .`.
+
+### Fix `CXXABI_1.3.15` / `libstdc++.so.6` on Ubuntu 22.04
+
+If Isaac Sim reports that `/lib/x86_64-linux-gnu/libstdc++.so.6` does not provide `CXXABI_1.3.15`, first verify the Conda environment's C++ runtime:
+
+```bash
+strings "$CONDA_PREFIX/lib/libstdc++.so.6" | grep CXXABI_1.3.15
+```
+
+If that symbol is missing, install a current Conda runtime:
+
+```bash
+conda install -y -c conda-forge "libstdcxx-ng>=13" "libgcc-ng>=13"
+```
+
+Then make the active environment's libraries take precedence for this shell and verify `sqlite3` before launching Isaac Sim:
+
+```bash
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+python -c "import sqlite3; print('sqlite OK:', sqlite3.sqlite_version)"
+```
+
+### Headless GCE training
+
+```bash
+python scripts/train_rsl.py \
+  --task DICE-Shadow-Train-v0 \
+  --num_envs 2048 \
+  --max_iterations 10000 \
+  --run_name strong_run \
+  --headless
+```
+
+The repeated `sh: 1: zenity: not found` message is not a request to install `zenity` for training. On an SSH-only GCE session it usually means a GUI/message-box path was reached. Launch training and evaluation with `--headless` instead.
+
 ---
 
 ## 1. Terminal Workflow Overview
@@ -84,7 +173,8 @@ python scripts/train_rsl.py \
   --task DICE-Shadow-Train-v0 \
   --num_envs 2048 \
   --max_iterations 10000 \
-  --run_name strong_run
+  --run_name strong_run \
+  --headless
 ```
 
 ### Evaluation
