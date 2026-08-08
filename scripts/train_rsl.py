@@ -1,6 +1,7 @@
 """Train DICE once on the complete final task with RSL-RL PPO."""
 
 import argparse
+import faulthandler
 import importlib.metadata as package_metadata
 import json
 import sys
@@ -140,7 +141,14 @@ def main():
 
     startup_log(output_dir, f"Output directory: {output_dir}")
     startup_log(output_dir, f"Creating Gym environment '{args.task}' with {env_cfg.scene.num_envs} envs...")
-    raw_env = gym.make(args.task, cfg=env_cfg)
+    # If Kit/PhysX/USD blocks inside gym.make(), emit the live Python stack
+    # periodically instead of leaving the terminal apparently frozen forever.
+    faulthandler.enable()
+    faulthandler.dump_traceback_later(90, repeat=True)
+    try:
+        raw_env = gym.make(args.task, cfg=env_cfg)
+    finally:
+        faulthandler.cancel_dump_traceback_later()
     startup_log(output_dir, "Gym environment created.")
 
     startup_log(output_dir, "Creating RSL-RL wrapper (this performs the initial environment reset)...")

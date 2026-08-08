@@ -1,10 +1,14 @@
 """Command-conditioned in-hand die reorientation for DICE."""
 
 import math
+from datetime import datetime
+from pathlib import Path
 
 import torch
 import torch.nn.functional as functional
 
+from isaaclab.envs import DirectRLEnv
+from isaaclab.markers import VisualizationMarkers
 from isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env import InHandManipulationEnv
 
 from dicedial.geometry import (
@@ -26,7 +30,59 @@ class DiceEnv(InHandManipulationEnv):
     """
 
     def __init__(self, cfg, render_mode=None, **kwargs):
-        super().__init__(cfg, render_mode, **kwargs)
+        # In Isaac Lab 2.3.2, InHandManipulationEnv.__init__ constructs a
+        # VisualizationMarkers USD PointInstancer unconditionally *after*
+        # DirectRLEnv prints "Completed setting up the environment...". DICE
+        # does not need that UI object for headless training/evaluation. Build
+        # the same in-hand runtime state here so marker creation can be skipped
+        # entirely when cfg.visualize_goal_marker is false.
+        self._startup_log(cfg, "Entering DICE environment constructor.")
+        DirectRLEnv.__init__(self, cfg, render_mode, **kwargs)
+        self._startup_log(cfg, "DirectRLEnv initialization complete; initializing Shadow Hand runtime buffers.")
+
+        self.num_hand_dofs = self.hand.num_joints
+        self.hand_dof_targets = torch.zeros(
+            (self.num_envs, self.num_hand_dofs), dtype=torch.float, device=self.device
+        )
+        self.prev_targets = torch.zeros_like(self.hand_dof_targets)
+        self.cur_targets = torch.zeros_like(self.hand_dof_targets)
+
+        self.actuated_dof_indices = sorted(
+            self.hand.joint_names.index(joint_name) for joint_name in cfg.actuated_joint_names
+        )
+        self.finger_bodies = sorted(
+            self.hand.body_names.index(body_name) for body_name in cfg.fingertip_body_names
+        )
+        self.num_fingertips = len(self.finger_bodies)
+
+        self._startup_log(cfg, "Reading Shadow Hand DOF limits from the PhysX tensor view...")
+        joint_pos_limits = self.hand.root_physx_view.get_dof_limits().to(self.device)
+        self.hand_dof_lower_limits = joint_pos_limits[..., 0]
+        self.hand_dof_upper_limits = joint_pos_limits[..., 1]
+        self._startup_log(cfg, "Shadow Hand DOF limits ready.")
+
+        self.reset_goal_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.in_hand_pos = self.object.data.default_root_state[:, 0:3].clone()
+        self.in_hand_pos[:, 2] -= 0.04
+        self.goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
+        self.goal_rot[:, 0] = 1.0
+        self.goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.goal_pos[:, :] = torch.tensor([-0.2, -0.45, 0.68], device=self.device)
+
+        if cfg.visualize_goal_marker:
+            self._startup_log(cfg, "Creating goal VisualizationMarkers (presentation mode).")
+            self.goal_markers = VisualizationMarkers(cfg.goal_object_cfg)
+            self._startup_log(cfg, "Goal VisualizationMarkers ready.")
+        else:
+            self.goal_markers = None
+            self._startup_log(cfg, "Skipping goal VisualizationMarkers for headless training/evaluation.")
+
+        self.successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
+        self.x_unit_tensor = torch.tensor([1, 0, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
+        self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
+        self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
+        self._startup_log(cfg, "Shadow Hand runtime buffers initialized.")
 
         self.target_faces = torch.ones(self.num_envs, dtype=torch.long, device=self.device)
         self.target_one_hot = torch.zeros(self.num_envs, 6, device=self.device)
@@ -42,8 +98,22 @@ class DiceEnv(InHandManipulationEnv):
         self.sequence_index = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         all_envs = torch.arange(self.num_envs, device=self.device)
+        self._startup_log(cfg, "Assigning initial semantic face commands.")
         self._assign_targets(all_envs, advance=False)
         self.last_alignment.copy_(target_face_alignment(self.object_rot, self.target_faces))
+        self._startup_log(cfg, "DICE environment constructor complete.")
+
+    @staticmethod
+    def _startup_log(cfg, message):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"[{timestamp}] [DICE ENV] {message}"
+        print(line, flush=True)
+        log_dir = getattr(cfg, "log_dir", None)
+        if log_dir:
+            path = Path(log_dir)
+            path.mkdir(parents=True, exist_ok=True)
+            with (path / "startup.log").open("a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
 
     # ------------------------------------------------------------------
     # Observation
