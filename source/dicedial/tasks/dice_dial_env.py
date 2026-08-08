@@ -97,10 +97,19 @@ class DiceEnv(InHandManipulationEnv):
         self.last_completed_face = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.sequence_index = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
-        all_envs = torch.arange(self.num_envs, device=self.device)
-        self._startup_log(cfg, "Assigning initial semantic face commands.")
-        self._assign_targets(all_envs, advance=False)
-        self.last_alignment.copy_(target_face_alignment(self.object_rot, self.target_faces))
+        # Match Isaac Lab's DirectRLEnv lifecycle: do not sample/reset task
+        # state inside __init__. The RSL-RL wrapper calls env.reset() immediately
+        # after gym.make() returns, and that first reset is where the stock
+        # in-hand task initializes randomized goals and state-dependent buffers.
+        #
+        # Keep a valid deterministic placeholder command until then. This also
+        # avoids touching object_rot before _compute_intermediate_values() has
+        # populated the in-hand state tensors.
+        self.target_faces.fill_(1)
+        self.target_one_hot.zero_()
+        self.target_one_hot[:, 0] = 1.0
+        self._initial_reset_pending = True
+        self._startup_log(cfg, "Initial semantic command deferred to first environment reset.")
         self._startup_log(cfg, "DICE environment constructor complete.")
 
     @staticmethod
@@ -340,8 +349,14 @@ class DiceEnv(InHandManipulationEnv):
         if env_ids is None:
             env_ids = self.hand._ALL_INDICES
         env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        initial_reset = getattr(self, "_initial_reset_pending", False)
+        if initial_reset:
+            self._startup_log(self.cfg, "First reset: entering Shadow Hand reset.")
 
         super()._reset_idx(env_ids)
+
+        if initial_reset:
+            self._startup_log(self.cfg, "First reset: parent Shadow Hand reset complete.")
 
         self.hold_counter[env_ids] = 0
         self.command_age_steps[env_ids] = 0
@@ -353,10 +368,18 @@ class DiceEnv(InHandManipulationEnv):
         self.last_alignment[env_ids] = target_face_alignment(
             self.object_rot[env_ids], self.target_faces[env_ids]
         )
+        if initial_reset:
+            self._startup_log(self.cfg, "First reset: DICE reset bookkeeping complete.")
 
     def _reset_target_pose(self, env_ids):
         env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        initial_reset = getattr(self, "_initial_reset_pending", False)
+        if initial_reset:
+            self._startup_log(self.cfg, "First reset: sampling initial semantic face commands.")
         self._assign_targets(env_ids, advance=False)
+        if initial_reset:
+            self._initial_reset_pending = False
+            self._startup_log(self.cfg, "First reset: semantic face commands ready.")
 
     # ------------------------------------------------------------------
     # Commands
@@ -394,17 +417,26 @@ class DiceEnv(InHandManipulationEnv):
                 )
                 targets = (current_targets - 1 + offsets) % 6 + 1
             else:
+                if getattr(self, "_initial_reset_pending", False):
+                    self._startup_log(self.cfg, f"First reset: torch.randint target sampling on {self.device}.")
                 targets = torch.randint(
                     1, 7, current_targets.shape, device=self.device
                 )
+                if getattr(self, "_initial_reset_pending", False):
+                    self._startup_log(self.cfg, "First reset: target IDs sampled.")
         else:
             raise ValueError("target_mode must be one of: fixed, random, cycle")
 
+        initial_reset = getattr(self, "_initial_reset_pending", False)
         self.target_faces[env_ids] = targets
         self.target_one_hot[env_ids] = functional.one_hot(
             targets - 1, num_classes=6
         ).float()
+        if initial_reset:
+            self._startup_log(self.cfg, "First reset: one-hot target encoding ready.")
         self.goal_rot[env_ids] = canonical_goal_quaternion(targets, device=self.device)
+        if initial_reset:
+            self._startup_log(self.cfg, "First reset: canonical goal quaternions ready.")
         self.hold_counter[env_ids] = 0
         self.command_age_steps[env_ids] = 0
 
