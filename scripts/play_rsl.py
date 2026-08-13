@@ -69,6 +69,7 @@ def main():
         use_fabric=not args.disable_fabric,
     )
     env_cfg.seed = args.seed
+    env_cfg.emit_step_metrics = True
 
     base_env = gym.make(
         args.task,
@@ -157,6 +158,23 @@ def main():
     print(f"[DICE] Checkpoint   : {checkpoint}")
     print(f"[DICE] Raw video   : {output_dir / 'raw'}")
     print(f"[DICE] Overlay CSV : {metrics_path}")
+
+    if not args.no_video:
+        raw_mp4s = sorted((output_dir / "raw").glob("*.mp4"))
+        if raw_mp4s:
+            raw_video = raw_mp4s[0]
+            annotated_video = output_dir / "DICE_annotated.mp4"
+            print(f"[DICE] Found raw video: {raw_video.name}")
+            print(f"[DICE] Auto-annotating video -> {annotated_video.name}...")
+            try:
+                import sys
+                sys.path.append(str(Path(__file__).resolve().parent))
+                from annotate_video import annotate_video
+                annotate_video(raw_video, metrics_path, annotated_video)
+            except Exception as exc:
+                print(f"[DICE] Warning: Auto-annotation failed: {exc}")
+        else:
+            print("[DICE] Warning: No raw MP4 file found in raw video directory.")
 
 
 if __name__ == "__main__":
