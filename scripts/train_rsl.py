@@ -192,30 +192,28 @@ def main():
     }
     write_metadata(metadata_path, metadata)
 
-    startup_log(output_dir, f"Output directory: {output_dir}")
-    startup_log(output_dir, f"Creating Gym environment '{args.task}' with {env_cfg.scene.num_envs} envs...")
-    # If Kit/PhysX/USD blocks inside gym.make(), emit the live Python stack
-    # periodically instead of leaving the terminal apparently frozen forever.
     faulthandler.enable()
-    faulthandler.dump_traceback_later(90, repeat=True)
+    faulthandler.dump_traceback_later(30, repeat=True)
     try:
+        startup_log(output_dir, f"Output directory: {output_dir}")
+        startup_log(output_dir, f"Creating Gym environment '{args.task}' with {env_cfg.scene.num_envs} envs...")
         raw_env = gym.make(args.task, cfg=env_cfg)
+        startup_log(output_dir, "Gym environment created.")
+
+        startup_log(output_dir, "Creating RSL-RL wrapper (this performs the initial environment reset)...")
+        env = RslRlVecEnvWrapper(raw_env, clip_actions=agent_cfg.clip_actions)
+        startup_log(output_dir, f"RSL-RL wrapper/reset complete (obs dim: {env.num_obs}, act dim: {env.num_actions}).")
+
+        startup_log(output_dir, "Constructing OnPolicyRunner and PPO storage...")
+        runner = OnPolicyRunner(
+            env,
+            agent_cfg.to_dict(),
+            log_dir=str(output_dir),
+            device=agent_cfg.device,
+        )
+        startup_log(output_dir, "OnPolicyRunner constructed.")
     finally:
         faulthandler.cancel_dump_traceback_later()
-    startup_log(output_dir, "Gym environment created.")
-
-    startup_log(output_dir, "Creating RSL-RL wrapper (this performs the initial environment reset)...")
-    env = RslRlVecEnvWrapper(raw_env, clip_actions=agent_cfg.clip_actions)
-    startup_log(output_dir, "RSL-RL wrapper/reset complete.")
-
-    startup_log(output_dir, "Constructing OnPolicyRunner and PPO storage...")
-    runner = OnPolicyRunner(
-        env,
-        agent_cfg.to_dict(),
-        log_dir=str(output_dir),
-        device=agent_cfg.device,
-    )
-    startup_log(output_dir, "OnPolicyRunner constructed.")
 
     # RSL-RL already records its own repository diff. Add the DICE repository
     # as well so every run captures the exact local code state used for training.

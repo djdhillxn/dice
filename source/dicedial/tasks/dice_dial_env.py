@@ -154,6 +154,8 @@ class DiceEnv(InHandManipulationEnv):
         - Normalized hold progress: 1
         """
 
+        self._compute_intermediate_values()
+
         normalized_joint_pos = (
             2.0
             * (self.hand_dof_pos - self.hand_dof_lower_limits)
@@ -428,6 +430,7 @@ class DiceEnv(InHandManipulationEnv):
             self._startup_log(self.cfg, "First reset: entering Shadow Hand reset.")
 
         super()._reset_idx(env_ids)
+        self._compute_intermediate_values()
 
         if initial_reset:
             self._startup_log(self.cfg, "First reset: parent Shadow Hand reset complete.")
