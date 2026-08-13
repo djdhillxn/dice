@@ -85,8 +85,52 @@ from dicedial.agents.rsl_rl_ppo_cfg import (
 )
 
 
+import hashlib
+import subprocess
+
+
 def write_metadata(path, metadata):
     path.write_text(json.dumps(metadata, indent=2, default=str))
+
+
+def get_git_metadata():
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL).decode("utf-8").strip()
+        diff = subprocess.check_output(["git", "diff", "HEAD"], stderr=subprocess.DEVNULL).decode("utf-8")
+        is_dirty = bool(diff.strip())
+        return {"commit": commit, "is_dirty": is_dirty, "diff": diff}
+    except Exception:
+        return {"commit": "unknown", "is_dirty": False, "diff": ""}
+
+
+def get_runtime_system_metadata(device):
+    versions = {}
+    for pkg in ("numpy", "torch", "rsl-rl", "rsl-rl-lib", "isaaclab"):
+        try:
+            versions[pkg] = package_metadata.version(pkg)
+        except package_metadata.PackageNotFoundError:
+            versions[pkg] = "not_found"
+
+    cuda_version = getattr(torch.version, "cuda", "unknown") if "torch" in sys.modules else "unknown"
+    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+
+    return {
+        "packages": versions,
+        "cuda_version": cuda_version,
+        "gpu_name": gpu_name,
+    }
+
+
+def get_reward_scale_hash(env_cfg):
+    reward_scales = {}
+    for attr in dir(env_cfg):
+        if "scale" in attr or "bonus" in attr or "penalty" in attr or "reward" in attr:
+            val = getattr(env_cfg, attr, None)
+            if isinstance(val, (int, float)):
+                reward_scales[attr] = val
+    serialized = json.dumps(reward_scales, sort_keys=True)
+    scale_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
+    return scale_hash, reward_scales
 
 
 def startup_log(output_dir, message):
@@ -122,6 +166,9 @@ def main():
     env_cfg.seed = args.seed
     env_cfg.log_dir = str(output_dir)
 
+    total_transitions = int(env_cfg.scene.num_envs) * int(agent_cfg.num_steps_per_env) * int(args.max_iterations)
+    reward_hash, reward_scales = get_reward_scale_hash(env_cfg)
+
     metadata_path = output_dir / "run.json"
     metadata = {
         "project": "DICE",
@@ -132,9 +179,15 @@ def main():
         "num_envs": int(env_cfg.scene.num_envs),
         "num_steps_per_env": int(agent_cfg.num_steps_per_env),
         "max_iterations": int(args.max_iterations),
+        "total_transitions": total_transitions,
+        "observation_space": int(getattr(env_cfg, "observation_space", 121)),
+        "action_space": int(getattr(env_cfg, "action_space", 20)),
         "resume": args.resume,
         "command": " ".join(sys.argv),
-        "numpy": package_metadata.version("numpy"),
+        "git": get_git_metadata(),
+        "runtime_system": get_runtime_system_metadata(device),
+        "reward_scale_hash": reward_hash,
+        "reward_scales": reward_scales,
         "agent": agent_cfg.to_dict(),
     }
     write_metadata(metadata_path, metadata)

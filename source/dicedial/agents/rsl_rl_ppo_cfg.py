@@ -14,7 +14,7 @@ from isaaclab_rl.rsl_rl import (
 class DicePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """RSL-RL configuration aligned with Isaac Lab's Shadow Hand baseline."""
 
-    num_steps_per_env = 64
+    num_steps_per_env = 32
     max_iterations = 10_000
     save_interval = 250
     experiment_name = "DICE"
@@ -22,7 +22,7 @@ class DicePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     clip_actions = 1.0
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.6,
+        init_noise_std=0.8,
         noise_std_type="log",
         actor_obs_normalization=True,
         critic_obs_normalization=True,
@@ -35,7 +35,7 @@ class DicePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.0,
+        entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=5.0e-4,

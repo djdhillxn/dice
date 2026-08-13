@@ -11,9 +11,9 @@
 
 ## Training configuration
 
-- observation dimension: 165
+- observation dimension: 121
 - action dimension: 20
-- steps per environment: 16
+- steps per environment: 32
 - actor/critic architecture: 512, 512, 256, 128
 - PPO clip: 0.2
 - learning rate: 5e-4, adaptive

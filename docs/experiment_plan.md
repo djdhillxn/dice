@@ -7,7 +7,7 @@ Run one full-task PPO experiment:
 ```text
 seed: 42
 environments: 2048
-steps per environment: 16
+steps per environment: 32
 maximum iterations: 10000
 checkpoint interval: 250
 ```

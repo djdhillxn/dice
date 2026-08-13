@@ -84,3 +84,47 @@ def canonical_goal_quaternion(target_faces, device=None):
 
     table = FACE_UP_QUATERNIONS.to(device or target_faces.device)
     return table[target_faces.long() - 1]
+
+
+def matrix_from_quaternion_wxyz(quaternion):
+    """Convert scalar-first quaternions to 3x3 rotation matrices.
+
+    Returns tensor of shape (*batch, 3, 3).
+    """
+
+    q = normalize_quaternion(quaternion)
+    w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+
+    r00 = 1.0 - 2.0 * (y**2 + z**2)
+    r01 = 2.0 * (x * y - w * z)
+    r02 = 2.0 * (x * z + w * y)
+
+    r10 = 2.0 * (x * y + w * z)
+    r11 = 1.0 - 2.0 * (x**2 + z**2)
+    r12 = 2.0 * (y * z - w * x)
+
+    r20 = 2.0 * (x * z - w * y)
+    r21 = 2.0 * (y * z + w * x)
+    r22 = 1.0 - 2.0 * (x**2 + y**2)
+
+    return torch.stack(
+        [
+            torch.stack([r00, r01, r02], dim=-1),
+            torch.stack([r10, r11, r12], dim=-1),
+            torch.stack([r20, r21, r22], dim=-1),
+        ],
+        dim=-2,
+    )
+
+
+def rotation_6d_from_quaternion_wxyz(quaternion):
+    """Extract continuous 6D rotation representation (first two columns of R).
+
+    Returns tensor of shape (*batch, 6).
+    """
+
+    R = matrix_from_quaternion_wxyz(quaternion)
+    col1 = R[..., :, 0]
+    col2 = R[..., :, 1]
+    return torch.cat([col1, col2], dim=-1)
+

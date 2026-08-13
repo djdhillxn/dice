@@ -15,9 +15,11 @@ from dicedial.geometry import (
     FACE_NORMALS,
     canonical_goal_quaternion,
     rotate_vector_wxyz,
+    rotation_6d_from_quaternion_wxyz,
     target_face_alignment,
     top_face,
 )
+
 
 
 class DiceEnv(InHandManipulationEnv):
@@ -49,6 +51,9 @@ class DiceEnv(InHandManipulationEnv):
 
         self.actuated_dof_indices = sorted(
             self.hand.joint_names.index(joint_name) for joint_name in cfg.actuated_joint_names
+        )
+        self.prev_actions = torch.zeros(
+            (self.num_envs, len(self.actuated_dof_indices)), dtype=torch.float, device=self.device
         )
         self.finger_bodies = sorted(
             self.hand.body_names.index(body_name) for body_name in cfg.fingertip_body_names
@@ -96,6 +101,8 @@ class DiceEnv(InHandManipulationEnv):
         self.last_top_face = torch.ones(self.num_envs, dtype=torch.long, device=self.device)
         self.last_completed_face = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.sequence_index = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.previous_target_faces = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.max_hold_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # Match Isaac Lab's DirectRLEnv lifecycle: do not sample/reset task
         # state inside __init__. The RSL-RL wrapper calls env.reset() immediately
@@ -129,48 +136,71 @@ class DiceEnv(InHandManipulationEnv):
     # ------------------------------------------------------------------
 
     def compute_full_observations(self):
-        """Return stock 157 features plus 17 command and geometric orientation features.
+        """Return a clean 121-dimensional frame-invariant actor observation.
 
-        Features (174 total):
-        - Stock Shadow Hand obs: 157
-        - Target face one-hot: 6
-        - Normalized hold progress: 1
-        - Target face alignment: 1
+        Features (121 total):
+        - Normalized hand joint positions: 24
+        - Scaled hand joint velocities: 24
+        - Previous actions: 20
+        - Fingertip positions relative to cube: 15
+        - Fingertip linear velocities: 15
+        - Cube position relative to in-hand center: 3
+        - Cube linear velocity: 3
+        - Cube angular velocity: 3
+        - Continuous 6D cube rotation: 6
         - Commanded face normal in world frame: 3
-        - Current top face normal in world frame: 3
-        - Rotation axis error vector (cross product): 3
+        - Commanded face alignment with world up (+Z): 1
+        - Rotation axis error vector (cross product with +Z): 3
+        - Normalized hold progress: 1
         """
 
-        base_observation = super().compute_full_observations()
-        hold_progress = (
-            self.hold_counter.float() / max(float(self.cfg.hold_steps), 1.0)
-        ).clamp(0.0, 1.0)
-        alignment = target_face_alignment(self.object_rot, self.target_faces)
+        normalized_joint_pos = (
+            2.0
+            * (self.hand_dof_pos - self.hand_dof_lower_limits)
+            / (self.hand_dof_upper_limits - self.hand_dof_lower_limits)
+            - 1.0
+        )
+        scaled_joint_vel = self.hand_dof_vel * 0.2
+
+        relative_fingertip_pos = (
+            self.fingertip_pos - self.object_pos.unsqueeze(1)
+        ).reshape(self.num_envs, -1)
+        fingertip_linvel = self.fingertip_linvel.reshape(self.num_envs, -1)
+
+        relative_object_pos = self.object_pos - self.in_hand_pos
+        cube_rotation_6d = rotation_6d_from_quaternion_wxyz(self.object_rot)
 
         face_normals_dev = FACE_NORMALS.to(self.device)
         commanded_local_normals = face_normals_dev[self.target_faces - 1]
         commanded_world_normals = rotate_vector_wxyz(self.object_rot, commanded_local_normals)
 
-        current_top = top_face(self.object_rot)
-        top_local_normals = face_normals_dev[current_top - 1]
-        top_world_normals = rotate_vector_wxyz(self.object_rot, top_local_normals)
+        alignment = commanded_world_normals[:, 2:3]
 
         world_up = torch.zeros_like(commanded_world_normals)
         world_up[:, 2] = 1.0
-        # Minimal rotation axis that moves the requested face normal toward
-        # world-up.  The previous top-vs-commanded cross product rotated two
-        # body-fixed vectors and was not the task's orientation error.
         axis_error = torch.cross(commanded_world_normals, world_up, dim=-1)
+
+        hold_progress = (
+            (self.hold_counter.float() / max(float(self.cfg.hold_steps), 1.0))
+            .clamp(0.0, 1.0)
+            .unsqueeze(-1)
+        )
 
         return torch.cat(
             (
-                base_observation,
-                self.target_one_hot,
-                hold_progress.unsqueeze(-1),
-                alignment.unsqueeze(-1),
+                normalized_joint_pos,
+                scaled_joint_vel,
+                self.actions,
+                relative_fingertip_pos,
+                fingertip_linvel,
+                relative_object_pos,
+                self.object_linvel,
+                self.object_angvel,
+                cube_rotation_6d,
                 commanded_world_normals,
-                top_world_normals,
+                alignment,
                 axis_error,
+                hold_progress,
             ),
             dim=-1,
         )
@@ -211,7 +241,19 @@ class DiceEnv(InHandManipulationEnv):
         )
 
         action_penalty = self.cfg.action_penalty_scale * torch.sum(self.actions.square(), dim=-1)
+        action_rate = self.actions - self.prev_actions
+        action_rate_penalty_scale = getattr(self.cfg, "action_rate_penalty_scale", -0.01)
+        action_rate_penalty = action_rate_penalty_scale * torch.sum(action_rate.square(), dim=-1)
         drop_penalty = self.cfg.drop_penalty * out_of_reach.float()
+
+        target_rate = self.cur_targets - self.prev_targets
+        target_rate_rms = torch.sqrt(target_rate.square().mean())
+        action_rate_rms = torch.sqrt(action_rate.square().mean())
+
+        joint_range = self.hand_dof_upper_limits - self.hand_dof_lower_limits
+        near_lower = self.hand_dof_pos <= (self.hand_dof_lower_limits + 0.02 * joint_range)
+        near_upper = self.hand_dof_pos >= (self.hand_dof_upper_limits - 0.02 * joint_range)
+        joint_limit_saturation = (near_lower | near_upper).float().mean()
 
         success_angle = math.cos(math.radians(self.cfg.success_angle_deg))
         hold_condition = (
@@ -249,6 +291,7 @@ class DiceEnv(InHandManipulationEnv):
             + position_penalty
             + angular_penalty
             + action_penalty
+            + action_rate_penalty
             + success_reward
             + drop_penalty
         )
@@ -258,6 +301,7 @@ class DiceEnv(InHandManipulationEnv):
         if current_top_face is not None:
             self.last_top_face.copy_(current_top_face)
         self.last_out_of_reach.copy_(out_of_reach)
+        self.prev_actions.copy_(self.actions)
 
         if success.any():
             success_ids = success.nonzero(as_tuple=False).squeeze(-1)
@@ -279,33 +323,63 @@ class DiceEnv(InHandManipulationEnv):
             self.hold_counter.float() / max(float(self.cfg.hold_steps), 1.0)
         ).clamp(0.0, 1.0)
 
-        log = self.extras.setdefault("log", {})
-        log["DICE/alignment"] = alignment.mean()
-        log["DICE/position_error"] = position_error.mean()
-        log["DICE/angular_speed"] = angular_speed.mean()
-        log["DICE/hold_progress"] = hold_progress.mean()
-        log["DICE/success_rate_per_step"] = success.float().mean()
-        log["DICE/commands_in_active_episode"] = self.successes.float().mean()
-        log["DICE/drop_rate_per_step"] = out_of_reach.float().mean()
-        log["DICE/gate_angle_rate"] = (alignment >= success_angle).float().mean()
-        log["DICE/gate_position_rate"] = (position_error <= self.cfg.success_position_tolerance).float().mean()
-        log["DICE/gate_angular_speed_rate"] = (angular_speed <= self.cfg.success_angular_speed).float().mean()
-        log["DICE/gate_all_rate"] = hold_condition.float().mean()
-        log["DICE/hold_ge_1_rate"] = (self.hold_counter >= 1).float().mean()
-        log["DICE/hold_ge_5_rate"] = (self.hold_counter >= 5).float().mean()
-        log["DICE/hold_ge_10_rate"] = (self.hold_counter >= 10).float().mean()
-        log["DICE/hold_ge_19_rate"] = (self.hold_counter >= 19).float().mean()
-        log["DICE/reward_alignment_progress"] = progress_reward.mean()
-        log["DICE/reward_hold_shaping"] = hold_shaping.mean()
-        log["DICE/reward_position"] = position_penalty.mean()
-        log["DICE/reward_angular"] = angular_penalty.mean()
-        log["DICE/reward_action"] = action_penalty.mean()
-        log["DICE/reward_success"] = success_reward.mean()
-        log["DICE/reward_drop"] = drop_penalty.mean()
-        log["DICE/reward_total"] = reward.mean()
-        log["DICE/action_mean_abs"] = self.actions.abs().mean()
-        log["DICE/action_rms"] = torch.sqrt(self.actions.square().mean())
-        log["DICE/action_saturation_rate"] = (self.actions.abs() >= 0.999).float().mean()
+        self.max_hold_counter = torch.maximum(self.max_hold_counter, self.hold_counter)
+
+        dt = getattr(self, "step_dt", 0.016666666)
+        sim_time_min = ((self.episode_length_buf.float() + 1.0) * dt) / 60.0
+        latencies_sec = self.last_success_latency * dt
+
+        has_prev = self.previous_target_faces > 0
+        is_opp = has_prev & ((self.previous_target_faces + self.target_faces) == 7)
+        is_adj = has_prev & ((self.previous_target_faces + self.target_faces) != 7)
+
+        opp_success = self.last_success[is_opp].float().mean() if is_opp.any() else torch.tensor(0.0, device=self.device)
+        adj_success = self.last_success[is_adj].float().mean() if is_adj.any() else torch.tensor(0.0, device=self.device)
+        failed_max_hold = self.max_hold_counter[~self.last_success].float().mean() if (~self.last_success).any() else torch.tensor(0.0, device=self.device)
+
+        # Construct a FRESH dictionary on every step to fix RSL-RL logging aliasing!
+        log = {}
+        log["DICE/alignment"] = alignment.mean().item()
+        log["DICE/position_error"] = position_error.mean().item()
+        log["DICE/angular_speed"] = angular_speed.mean().item()
+        log["DICE/hold_progress"] = hold_progress.mean().item()
+        log["DICE/success_rate_per_step"] = success.float().mean().item()
+        log["DICE/episode_has_at_least_1_success_rate"] = (self.successes >= 1).float().mean().item()
+        log["DICE/commands_completed_per_episode"] = self.successes.float().mean().item()
+        log["DICE/commands_per_sim_minute"] = (self.successes.float() / sim_time_min.clamp_min(0.01)).mean().item()
+        log["DICE/success_within_2s_rate"] = (self.last_success & (latencies_sec <= 2.0)).float().mean().item()
+        log["DICE/success_within_4s_rate"] = (self.last_success & (latencies_sec <= 4.0)).float().mean().item()
+        log["DICE/success_within_6s_rate"] = (self.last_success & (latencies_sec <= 6.0)).float().mean().item()
+        log["DICE/success_rate_adjacent_transitions"] = adj_success.item()
+        log["DICE/success_rate_opposite_transitions"] = opp_success.item()
+        log["DICE/max_hold_reached_failed_commands"] = failed_max_hold.item()
+        log["DICE/drop_rate_per_step"] = out_of_reach.float().mean().item()
+        log["DICE/drop_rate_per_sim_minute"] = (out_of_reach.float() / (dt / 60.0)).mean().item()
+        log["DICE/gate_angle_rate"] = (alignment >= success_angle).float().mean().item()
+        log["DICE/gate_position_rate"] = (position_error <= self.cfg.success_position_tolerance).float().mean().item()
+        log["DICE/gate_angular_speed_rate"] = (angular_speed <= self.cfg.success_angular_speed).float().mean().item()
+        log["DICE/gate_all_rate"] = hold_condition.float().mean().item()
+        log["DICE/hold_ge_1_rate"] = (self.hold_counter >= 1).float().mean().item()
+        log["DICE/hold_ge_5_rate"] = (self.hold_counter >= 5).float().mean().item()
+        log["DICE/hold_ge_10_rate"] = (self.hold_counter >= 10).float().mean().item()
+        log["DICE/hold_ge_19_rate"] = (self.hold_counter >= 19).float().mean().item()
+        log["DICE/reward_alignment_progress"] = progress_reward.mean().item()
+        log["DICE/reward_hold_shaping"] = hold_shaping.mean().item()
+        log["DICE/reward_position"] = position_penalty.mean().item()
+        log["DICE/reward_angular"] = angular_penalty.mean().item()
+        log["DICE/reward_action"] = action_penalty.mean().item()
+        log["DICE/reward_action_rate"] = action_rate_penalty.mean().item()
+        log["DICE/reward_success"] = success_reward.mean().item()
+        log["DICE/reward_drop"] = drop_penalty.mean().item()
+        log["DICE/reward_total"] = reward.mean().item()
+        log["DICE/action_mean_abs"] = self.actions.abs().mean().item()
+        log["DICE/action_rms"] = torch.sqrt(self.actions.square().mean()).item()
+        log["DICE/action_rate_rms"] = action_rate_rms.item()
+        log["DICE/target_rate_rms"] = target_rate_rms.item()
+        log["DICE/joint_limit_saturation"] = joint_limit_saturation.item()
+        log["DICE/action_saturation_rate"] = (self.actions.abs() >= 0.999).float().mean().item()
+
+        self.extras["log"] = log
 
         if self.cfg.emit_step_metrics:
             # Cloned step-level tensors survive Isaac Lab's automatic reset and
@@ -360,11 +434,14 @@ class DiceEnv(InHandManipulationEnv):
 
         self.hold_counter[env_ids] = 0
         self.command_age_steps[env_ids] = 0
+        self.prev_actions[env_ids] = 0.0
         self.last_success_latency[env_ids] = 0.0
         self.last_success[env_ids] = False
         self.last_out_of_reach[env_ids] = False
         self.last_completed_face[env_ids] = 0
         self.sequence_index[env_ids] = 0
+        self.previous_target_faces[env_ids] = 0
+        self.max_hold_counter[env_ids] = 0
         self.last_alignment[env_ids] = target_face_alignment(
             self.object_rot[env_ids], self.target_faces[env_ids]
         )
@@ -439,6 +516,11 @@ class DiceEnv(InHandManipulationEnv):
             self._startup_log(self.cfg, "First reset: canonical goal quaternions ready.")
         self.hold_counter[env_ids] = 0
         self.command_age_steps[env_ids] = 0
+        if advance:
+            self.previous_target_faces[env_ids] = current_targets
+        else:
+            self.previous_target_faces[env_ids] = 0
+        self.max_hold_counter[env_ids] = 0
 
         if self.cfg.visualize_goal_marker:
             goal_positions = self.goal_pos + self.scene.env_origins

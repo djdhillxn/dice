@@ -82,15 +82,11 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
     """Shared final-task configuration.
 
     The inherited Shadow Hand task supplies the hand, stock instanceable cube,
-    contacts, action controller, and reset logic. DICE retains the stock
-    157-dimensional full observation and appends eight command features:
-
-    * requested-face one-hot: 6
-    * normalized hold progress: 1
-    * requested-face alignment with world up: 1
+    contacts, action controller, and reset logic. DICE uses a rebuilt,
+    frame-invariant 121-dimensional actor observation.
     """
 
-    observation_space = 174
+    observation_space = 121
     action_space = 20
     state_space = 0
     obs_type = "full"
@@ -127,7 +123,8 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
     # Penalize squared angular-speed excess only near the requested face.
     angular_speed_scale = -0.25
     angular_penalty_gate_deg = 30.0
-    action_penalty_scale = -0.0002
+    action_penalty_scale = 0.0
+    action_rate_penalty_scale = -0.01
     success_bonus = 250.0
     drop_penalty = -50.0
 

@@ -14,15 +14,24 @@ The single-environment play configuration replaces it with the local numbered di
 
 ## Policy interface
 
-The actor receives 165 values:
+The actor receives a clean 121-dimensional frame-invariant observation:
 
 ```text
-157 stock Shadow Hand full-observation features
-  6 requested-face one-hot values
-  1 normalized hold counter
-  1 requested-face alignment
+24 normalized hand joint positions
+24 scaled hand joint velocities
+20 previous actions
+15 relative fingertip positions (5 x 3)
+15 fingertip linear velocities (5 x 3)
+ 3 relative cube position
+ 3 cube linear velocity
+ 3 cube angular velocity
+ 6 continuous 6D cube rotation
+ 3 commanded face normal (world frame)
+ 1 commanded face alignment (+Z)
+ 3 rotation axis error (cross product with +Z)
+ 1 normalized hold progress
 ---
-165 total
+121 total
 ```
 
 The action remains the inherited 20-dimensional joint-target action.
