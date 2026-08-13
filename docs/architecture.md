@@ -14,7 +14,7 @@ The single-environment play configuration replaces it with the local numbered di
 
 ## Policy interface
 
-The actor receives a clean 121-dimensional frame-invariant observation:
+The actor receives a clean 121-dimensional task-aligned observation:
 
 ```text
 24 normalized hand joint positions

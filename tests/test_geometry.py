@@ -1,14 +1,11 @@
 """Unit tests for geometry calculations and die face math."""
 
 import unittest
-import math
+
 import torch
 
 from dicedial.geometry import (
-    FACE_NORMALS,
     FACE_UP_QUATERNIONS,
-    canonical_goal_quaternion,
-    matrix_from_quaternion_wxyz,
     normalize_quaternion,
     rotate_vector_wxyz,
     rotation_6d_from_quaternion_wxyz,
@@ -51,11 +48,13 @@ class TestGeometry(unittest.TestCase):
         # Opposite faces in standard dice: (1,6), (2,5), (3,4) all sum to 7
         for f1 in range(1, 7):
             for f2 in range(1, 7):
-                is_opp = (f1 + f2 == 7)
+                is_opp = f1 + f2 == 7
                 if (f1, f2) in [(1, 6), (6, 1), (2, 5), (5, 2), (3, 4), (4, 3)]:
                     self.assertTrue(is_opp, f"Expected {f1} and {f2} to be opposite")
                 else:
-                    self.assertFalse(is_opp, f"Expected {f1} and {f2} not to be opposite")
+                    self.assertFalse(
+                        is_opp, f"Expected {f1} and {f2} not to be opposite"
+                    )
 
 
 if __name__ == "__main__":

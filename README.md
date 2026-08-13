@@ -189,25 +189,25 @@ In naive setups, policies receive a static posture reward proportional to how cl
 
 ---
 
-## 4. Observation Space (174 Dimensions)
+## 4. Observation Space (121 Dimensions)
 
 The action space is Isaac Lab's 20-dimensional continuous Shadow Hand joint targets.
 
-The policy receives a **174-dimensional** observation space:
+The policy receives a **121-dimensional task-aligned** observation space:
 
-- **Stock Shadow Hand full observation** (157 dims): Joint positions, velocities, hand pose, object pose, object velocities.
-- **Requested face one-hot** (6 dims): One-hot encoding of target face 1..6.
+- **Hand proprioception** (48 dims): 24 normalized joint positions and 24 scaled joint velocities.
+- **Previous action** (20 dims): The joint command applied on the preceding control step.
+- **Fingertip state** (30 dims): Five cube-relative fingertip positions and five world-frame linear velocities.
+- **Cube translation and velocity** (9 dims): Position relative to the nominal in-hand center plus linear and angular velocity.
+- **Cube orientation** (6 dims): Continuous 6D rotation representation.
+- **Command geometry** (7 dims): Commanded face normal in world coordinates, its alignment with world-up, and the cross-product rotation-axis error.
 - **Hold progress** (1 dim): Normalized hold counter `hold_counter / 20`.
-- **Target face alignment** (1 dim): Scalar dot product of commanded face normal with world UP `(0,0,1)`.
-- **Commanded face normal in world frame** (3 dims): 3D unit vector $[N_x, N_y, N_z]$.
-- **Current top face normal in world frame** (3 dims): 3D unit vector $[n_x, n_y, n_z]$.
-- **Rotation axis error vector** (3 dims): Cross product of the requested face normal with world-up (instantaneous rotation axis that moves the requested face toward the task target).
 
 ---
 
 ## 5. RSL-RL PPO Configuration
 
-- **Rollout Length**: `num_steps_per_env = 64` (provides a long credit assignment horizon across simulation steps).
+- **Rollout Length**: `num_steps_per_env = 32` (65,536 transitions per update with 2,048 environments).
 - **Optimizer**: Adam with adaptive KL learning rate schedule (`desired_kl = 0.016`, initial LR `5e-4`).
 - **Network**: Shared depth `[512, 512, 256, 128]` with ELU activations and observation normalization.
 - **Discount & GAE**: `gamma = 0.99`, `lambda = 0.95`.

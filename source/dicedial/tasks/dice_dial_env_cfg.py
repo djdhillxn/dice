@@ -83,7 +83,7 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
 
     The inherited Shadow Hand task supplies the hand, stock instanceable cube,
     contacts, action controller, and reset logic. DICE uses a rebuilt,
-    frame-invariant 121-dimensional actor observation.
+    task-aligned 121-dimensional actor observation.
     """
 
     observation_space = 121

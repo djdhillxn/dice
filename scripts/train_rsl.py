@@ -2,8 +2,10 @@
 
 import argparse
 import faulthandler
+import hashlib
 import importlib.metadata as package_metadata
 import json
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -85,18 +87,22 @@ from dicedial.agents.rsl_rl_ppo_cfg import (
 )
 
 
-import hashlib
-import subprocess
-
-
 def write_metadata(path, metadata):
     path.write_text(json.dumps(metadata, indent=2, default=str))
 
 
 def get_git_metadata():
     try:
-        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL).decode("utf-8").strip()
-        diff = subprocess.check_output(["git", "diff", "HEAD"], stderr=subprocess.DEVNULL).decode("utf-8")
+        commit = (
+            subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
+            )
+            .decode("utf-8")
+            .strip()
+        )
+        diff = subprocess.check_output(
+            ["git", "diff", "HEAD"], stderr=subprocess.DEVNULL
+        ).decode("utf-8")
         is_dirty = bool(diff.strip())
         return {"commit": commit, "is_dirty": is_dirty, "diff": diff}
     except Exception:
@@ -111,7 +117,11 @@ def get_runtime_system_metadata(device):
         except package_metadata.PackageNotFoundError:
             versions[pkg] = "not_found"
 
-    cuda_version = getattr(torch.version, "cuda", "unknown") if "torch" in sys.modules else "unknown"
+    cuda_version = (
+        getattr(torch.version, "cuda", "unknown")
+        if "torch" in sys.modules
+        else "unknown"
+    )
     gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
 
     return {
@@ -166,7 +176,11 @@ def main():
     env_cfg.seed = args.seed
     env_cfg.log_dir = str(output_dir)
 
-    total_transitions = int(env_cfg.scene.num_envs) * int(agent_cfg.num_steps_per_env) * int(args.max_iterations)
+    total_transitions = (
+        int(env_cfg.scene.num_envs)
+        * int(agent_cfg.num_steps_per_env)
+        * int(args.max_iterations)
+    )
     reward_hash, reward_scales = get_reward_scale_hash(env_cfg)
 
     metadata_path = output_dir / "run.json"
@@ -196,13 +210,24 @@ def main():
     faulthandler.dump_traceback_later(30, repeat=True)
     try:
         startup_log(output_dir, f"Output directory: {output_dir}")
-        startup_log(output_dir, f"Creating Gym environment '{args.task}' with {env_cfg.scene.num_envs} envs...")
+        startup_log(
+            output_dir,
+            f"Creating Gym environment '{args.task}' with {env_cfg.scene.num_envs} envs...",
+        )
         raw_env = gym.make(args.task, cfg=env_cfg)
         startup_log(output_dir, "Gym environment created.")
 
-        startup_log(output_dir, "Creating RSL-RL wrapper (this performs the initial environment reset)...")
+        startup_log(
+            output_dir,
+            "Creating RSL-RL wrapper (this performs the initial environment reset)...",
+        )
         env = RslRlVecEnvWrapper(raw_env, clip_actions=agent_cfg.clip_actions)
-        startup_log(output_dir, f"RSL-RL wrapper/reset complete (obs dim: {env.num_obs}, act dim: {env.num_actions}).")
+        observation_dim = int(env.unwrapped.cfg.observation_space)
+        startup_log(
+            output_dir,
+            f"RSL-RL wrapper/reset complete (obs dim: {observation_dim}, "
+            f"act dim: {env.num_actions}).",
+        )
 
         startup_log(output_dir, "Constructing OnPolicyRunner and PPO storage...")
         runner = OnPolicyRunner(
@@ -222,7 +247,9 @@ def main():
 
     resumed = False
     if args.resume:
-        checkpoint = compatible_checkpoint_path(Path(args.resume).expanduser().resolve())
+        checkpoint = compatible_checkpoint_path(
+            Path(args.resume).expanduser().resolve()
+        )
         runner.load(checkpoint)
         # RSL-RL checkpoints store the last completed zero-based iteration. Start
         # from the following iteration rather than repeating the checkpoint step.
@@ -265,14 +292,21 @@ def main():
                 init_at_random_ep_len=(start_iteration == 0 and not resumed),
             )
         else:
-            startup_log(output_dir, "Target iteration already reached; no PPO updates required.")
+            startup_log(
+                output_dir, "Target iteration already reached; no PPO updates required."
+            )
     except KeyboardInterrupt:
         interrupted = True
-        print("\n[DICE] Training interrupted by user. Saving current checkpoint.", flush=True)
+        print(
+            "\n[DICE] Training interrupted by user. Saving current checkpoint.",
+            flush=True,
+        )
     except Exception:
         failed = True
         metadata["status"] = "failed"
-        metadata["last_iteration"] = int(getattr(runner, "current_learning_iteration", 0))
+        metadata["last_iteration"] = int(
+            getattr(runner, "current_learning_iteration", 0)
+        )
         write_metadata(metadata_path, metadata)
         raise
     finally:

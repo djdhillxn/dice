@@ -25,20 +25,21 @@ Upon achieving success, the environment immediately assigns a new target face wi
 
 ---
 
-## 3. Observation Space Design (174 Dimensions)
+## 3. Observation Space Design (121 Dimensions)
 
-To eliminate orientation ambiguity and provide explicit instantaneous torque directions to the policy, the observation vector is expanded to **174 dimensions**:
+The policy uses a compact, continuous **121-dimensional** task-aligned observation:
 
 | Observation Feature | Dimensions | Description |
 |---|---|---|
-| **Base Shadow Hand Proprioception** | 157 | Joint positions, joint velocities, palm pose, die position/orientation, die linear/angular velocity |
-| **Requested Target One-Hot** | 6 | One-hot vector representing requested target face 1..6 |
+| **Hand joint position and velocity** | 48 | 24 normalized positions and 24 scaled velocities |
+| **Previous action** | 20 | Joint command applied on the preceding control step |
+| **Cube-relative fingertip position** | 15 | Five fingertip position vectors |
+| **Fingertip linear velocity** | 15 | Five world-frame linear-velocity vectors |
+| **Cube translation and velocity** | 9 | Relative position, linear velocity, and angular velocity |
+| **Cube rotation** | 6 | Continuous 6D orientation representation |
+| **Command geometry** | 7 | Commanded world normal, vertical alignment, and rotation-axis error |
 | **Hold Progress** | 1 | Continuous scalar $\frac{\text{hold\_counter}}{20} \in [0.0, 1.0]$ |
-| **Target Face Alignment** | 1 | Cosine alignment $\vec{N}_{\text{commanded}} \cdot \hat{z}_{\text{world}} \in [-1.0, 1.0]$ |
-| **Commanded Normal (World)** | 3 | 3D unit vector $[N_x, N_y, N_z]$ of requested face in world frame |
-| **Current Top Normal (World)** | 3 | 3D unit vector $[n_x, n_y, n_z]$ of uppermost face in world frame |
-| **Rotation Axis Error Vector** | 3 | Cross product $\vec{n} \times \vec{N}$ (instantaneous 3D rotation axis required to align faces) |
-| **Total Observation Dimension** | **174** | Fully specified, yaw-invariant, geometrically complete input representation |
+| **Total Observation Dimension** | **121** | Compact, task-aligned policy input |
 
 ---
 
@@ -51,21 +52,22 @@ $$\mathcal{R}_{\text{progress}} = c_{\text{progress}} \times (\text{alignment}_t
 * **Target Switch Reset**: When a new target is assigned upon success, $\text{alignment}_{t-1}$ is updated to the new target's baseline alignment to prevent artificial negative delta spikes.
 
 ### 4.2 Continuous Hold Progress & Completion Incentives
-* **Hold Progress Shaping**: $\mathcal{R}_{\text{hold}} = c_{\text{hold}} \times \frac{\text{hold\_counter}}{20} \times \mathbb{I}_{\text{in\_gate}}$ (smooth gradient while holding inside $16^\circ$).
+* **Signed Hold Progress Shaping**: $\mathcal{R}_{\text{hold}} = c_{\text{hold}} \times \frac{h_t-h_{t-1}}{20}$, which claws back accumulated shaping when a partial hold breaks.
 * **Success Completion Bonus**: $+250.0$ upon reaching step 20 of hold. Primary driver of return.
 * **Drop Penalty**: $-50.0$ if position error exceeds $0.24\text{m}$.
 * **Position Error Penalty**: $-2.0 \times \|\mathbf{p}_{\text{die}} - \mathbf{p}_{\text{palm}}\|$.
-* **Action Penalty**: $-0.0002 \times \|\mathbf{a}_t\|^2$.
+* **Action-Rate Penalty**: $-0.01 \times \|\mathbf{a}_t-\mathbf{a}_{t-1}\|^2$; there is no separate action-magnitude penalty.
 
 ---
 
 ## 5. RSL-RL PPO Agent Hyperparameters
 
 * **Parallel Environments**: 2048
-* **Rollout Horizon (`num_steps_per_env`)**: 64 steps ($1.07\text{s}$ per rollout update)
+* **Rollout Horizon (`num_steps_per_env`)**: 32 steps ($0.53\text{s}$ per rollout update)
 * **Total Training Iterations**: 10,000
 * **Network Architecture**: Policy & Value MLPs $[512, 512, 256, 128]$ with ELU activations
 * **Observation Normalization**: Enabled
+* **Exploration**: Initial policy noise standard deviation `0.8` and entropy coefficient `0.005`
 * **Learning Rate**: $5 \times 10^{-4}$ with adaptive KL schedule (`desired_kl = 0.016`)
 * **GAE Discount & Lambda**: $\gamma = 0.99, \lambda = 0.95$
 
