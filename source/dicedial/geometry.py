@@ -9,9 +9,9 @@ import torch
 # The vectors are expressed in the die's local coordinate frame.
 FACE_NORMALS = torch.tensor(
     [
-        [0.0, 0.0, 1.0],   # 1: +Z
-        [1.0, 0.0, 0.0],   # 2: +X
-        [0.0, 1.0, 0.0],   # 3: +Y
+        [0.0, 0.0, 1.0],  # 1: +Z
+        [1.0, 0.0, 0.0],  # 2: +X
+        [0.0, 1.0, 0.0],  # 3: +Y
         [0.0, -1.0, 0.0],  # 4: -Y
         [-1.0, 0.0, 0.0],  # 5: -X
         [0.0, 0.0, -1.0],  # 6: -Z
@@ -55,6 +55,21 @@ def rotate_vector_wxyz(quaternion, vector):
     first_cross = torch.cross(xyz, vector, dim=-1)
     second_cross = torch.cross(xyz, first_cross, dim=-1)
     return vector + 2.0 * (scalar * first_cross + second_cross)
+
+
+def quat_conjugate_wxyz(quaternion):
+    """Return the conjugate of scalar-first quaternions (w, -x, -y, -z)."""
+
+    q = normalize_quaternion(quaternion)
+    conj = q.clone()
+    conj[..., 1:] = -conj[..., 1:]
+    return conj
+
+
+def rotate_vector_inverse_wxyz(quaternion, vector):
+    """Rotate vectors by the inverse of scalar-first quaternions into local frame."""
+
+    return rotate_vector_wxyz(quat_conjugate_wxyz(quaternion), vector)
 
 
 def target_face_alignment(object_quaternion, target_faces):
@@ -127,4 +142,3 @@ def rotation_6d_from_quaternion_wxyz(quaternion):
     col1 = R[..., :, 0]
     col2 = R[..., :, 1]
     return torch.cat([col1, col2], dim=-1)
-

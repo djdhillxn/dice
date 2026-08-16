@@ -5,13 +5,18 @@ import faulthandler
 import hashlib
 import importlib.metadata as package_metadata
 import json
+import os
+import platform
+import socket
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 
 EXPECTED_NUMPY = "1.26.0"
+DEFAULT_SAVE_INTERVAL = 1_000
 
 
 def require_compatible_numpy():
@@ -51,9 +56,15 @@ parser.add_argument("--task", default="DICE-Shadow-Train-v0")
 parser.add_argument("--num_envs", type=int, default=2048)
 parser.add_argument("--max_iterations", type=int, default=10_000)
 parser.add_argument("--run_name", default="final")
-parser.add_argument("--output_root", default="outputs/DICE")
+parser.add_argument("--output_root", default="outputs")
 parser.add_argument("--resume", default=None, help="RSL-RL .pt checkpoint")
 parser.add_argument("--seed", type=int, default=42)
+parser.add_argument(
+    "--save_interval",
+    type=int,
+    default=DEFAULT_SAVE_INTERVAL,
+    help="Iterations between resumable periodic checkpoints.",
+)
 parser.add_argument(
     "--disable_fabric",
     action="store_true",
@@ -62,6 +73,8 @@ parser.add_argument(
 )
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+if args.save_interval <= 0:
+    parser.error("--save_interval must be greater than zero")
 
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
@@ -69,7 +82,6 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym
 import torch
-from rsl_rl.runners import OnPolicyRunner
 
 # Match Isaac Lab's official RSL-RL training path.
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -84,6 +96,12 @@ import dicedial.tasks  # noqa: F401
 from dicedial.agents.rsl_rl_ppo_cfg import (
     compatible_checkpoint_path,
     make_runner_cfg,
+)
+from dicedial.agents.dice_on_policy_runner import DiceOnPolicyRunner
+from dicedial.training_artifacts import (
+    collect_runtime_logs,
+    export_tensorboard_scalars,
+    write_artifact_manifest,
 )
 
 
@@ -103,8 +121,16 @@ def get_git_metadata():
         diff = subprocess.check_output(
             ["git", "diff", "HEAD"], stderr=subprocess.DEVNULL
         ).decode("utf-8")
-        is_dirty = bool(diff.strip())
-        return {"commit": commit, "is_dirty": is_dirty, "diff": diff}
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"], stderr=subprocess.DEVNULL
+        ).decode("utf-8")
+        is_dirty = bool(status.strip())
+        return {
+            "commit": commit,
+            "is_dirty": is_dirty,
+            "status": status,
+            "diff": diff,
+        }
     except Exception:
         return {"commit": "unknown", "is_dirty": False, "diff": ""}
 
@@ -122,12 +148,25 @@ def get_runtime_system_metadata(device):
         if "torch" in sys.modules
         else "unknown"
     )
-    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device_index = torch.device(device).index or 0
+        gpu_properties = torch.cuda.get_device_properties(device_index)
+        gpu = {
+            "name": gpu_properties.name,
+            "total_memory_bytes": gpu_properties.total_memory,
+            "compute_capability": f"{gpu_properties.major}.{gpu_properties.minor}",
+        }
+    else:
+        gpu = None
 
     return {
         "packages": versions,
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "hostname": socket.gethostname(),
+        "logical_cpu_count": os.cpu_count(),
         "cuda_version": cuda_version,
-        "gpu_name": gpu_name,
+        "gpu": gpu,
     }
 
 
@@ -154,6 +193,9 @@ def startup_log(output_dir, message):
 
 
 def main():
+    started_at = datetime.now().astimezone()
+    started_timestamp = time.time()
+    started_monotonic = time.monotonic()
     device = args.device or "cuda:0"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     directory_name = timestamp if not args.run_name else f"{timestamp}_{args.run_name}"
@@ -166,6 +208,7 @@ def main():
         max_iterations=args.max_iterations,
         run_name=args.run_name,
     )
+    agent_cfg.save_interval = int(args.save_interval)
 
     env_cfg = parse_env_cfg(
         args.task,
@@ -185,8 +228,10 @@ def main():
 
     metadata_path = output_dir / "run.json"
     metadata = {
+        "schema_version": 2,
         "project": "DICE",
         "status": "initializing",
+        "started_at": started_at.isoformat(),
         "task": args.task,
         "seed": args.seed,
         "device": device,
@@ -194,7 +239,8 @@ def main():
         "num_steps_per_env": int(agent_cfg.num_steps_per_env),
         "max_iterations": int(args.max_iterations),
         "total_transitions": total_transitions,
-        "observation_space": int(getattr(env_cfg, "observation_space", 121)),
+        "observation_space": int(getattr(env_cfg, "observation_space", 126)),
+        "critic_state_space": int(getattr(env_cfg, "state_space", 0)),
         "action_space": int(getattr(env_cfg, "action_space", 20)),
         "resume": args.resume,
         "command": " ".join(sys.argv),
@@ -202,6 +248,7 @@ def main():
         "runtime_system": get_runtime_system_metadata(device),
         "reward_scale_hash": reward_hash,
         "reward_scales": reward_scales,
+        "environment": env_cfg.to_dict(),
         "agent": agent_cfg.to_dict(),
     }
     write_metadata(metadata_path, metadata)
@@ -222,21 +269,64 @@ def main():
             "Creating RSL-RL wrapper (this performs the initial environment reset)...",
         )
         env = RslRlVecEnvWrapper(raw_env, clip_actions=agent_cfg.clip_actions)
-        observation_dim = int(env.unwrapped.cfg.observation_space)
+        initial_observations = env.get_observations()
+        if "policy" not in initial_observations:
+            raise RuntimeError(
+                "DICE environment did not return a 'policy' observation."
+            )
+        if "critic" not in initial_observations:
+            raise RuntimeError(
+                "DICE environment did not return a 'critic' observation."
+            )
+
+        policy_shape = tuple(initial_observations["policy"].shape)
+        critic_shape = tuple(initial_observations["critic"].shape)
+        expected_policy_shape = (
+            int(env.num_envs),
+            int(env.unwrapped.cfg.observation_space),
+        )
+        expected_critic_shape = (
+            int(env.num_envs),
+            int(env.unwrapped.cfg.state_space),
+        )
+        if policy_shape != expected_policy_shape:
+            raise RuntimeError(
+                f"DICE wrapper policy observation shape mismatch: got {policy_shape}, "
+                f"expected {expected_policy_shape}."
+            )
+        if critic_shape != expected_critic_shape:
+            raise RuntimeError(
+                f"DICE wrapper critic observation shape mismatch: got {critic_shape}, "
+                f"expected {expected_critic_shape}."
+            )
+
         startup_log(
             output_dir,
-            f"RSL-RL wrapper/reset complete (obs dim: {observation_dim}, "
-            f"act dim: {env.num_actions}).",
+            f"RSL-RL wrapper/reset complete (policy: {policy_shape}, "
+            f"critic: {critic_shape}, act dim: {env.num_actions}).",
         )
 
         startup_log(output_dir, "Constructing OnPolicyRunner and PPO storage...")
-        runner = OnPolicyRunner(
+        runner = DiceOnPolicyRunner(
             env,
             agent_cfg.to_dict(),
             log_dir=str(output_dir),
             device=agent_cfg.device,
         )
-        startup_log(output_dir, "OnPolicyRunner constructed.")
+        resolved_obs_groups = runner.cfg.get("obs_groups", {})
+        expected_obs_groups = {
+            "policy": ["policy"],
+            "critic": ["critic"],
+        }
+        if resolved_obs_groups != expected_obs_groups:
+            raise RuntimeError(
+                "DICE RSL-RL observation-group mismatch: "
+                f"got {resolved_obs_groups}, expected {expected_obs_groups}."
+            )
+        startup_log(
+            output_dir,
+            f"OnPolicyRunner constructed with observation groups {resolved_obs_groups}.",
+        )
     finally:
         faulthandler.cancel_dump_traceback_later()
 
@@ -278,6 +368,7 @@ def main():
     interrupted = False
     failed = False
     final_checkpoint = output_dir / "model_final.pt"
+    artifact_results = {}
 
     try:
         if remaining_iterations > 0:
@@ -303,22 +394,59 @@ def main():
         )
     except Exception:
         failed = True
-        metadata["status"] = "failed"
-        metadata["last_iteration"] = int(
-            getattr(runner, "current_learning_iteration", 0)
-        )
-        write_metadata(metadata_path, metadata)
         raise
     finally:
-        runner.save(str(final_checkpoint))
+        current_iteration = int(getattr(runner, "current_learning_iteration", 0))
+        rsl_final_checkpoint = output_dir / f"model_{current_iteration}.pt"
+        if not interrupted and not failed and rsl_final_checkpoint.exists():
+            rsl_final_checkpoint.replace(final_checkpoint)
+        else:
+            runner.save(str(final_checkpoint))
+
+        writer = getattr(runner, "writer", None)
+        if writer is not None:
+            writer.flush()
+        try:
+            artifact_results["tensorboard_export"] = export_tensorboard_scalars(
+                output_dir
+            )
+        except Exception as error:
+            artifact_results["tensorboard_export"] = {
+                "status": "failed",
+                "error": repr(error),
+            }
+        try:
+            artifact_results["runtime_logs"] = collect_runtime_logs(
+                output_dir, started_timestamp
+            )
+        except Exception as error:
+            artifact_results["runtime_logs"] = {
+                "status": "failed",
+                "error": repr(error),
+            }
+        if writer is not None:
+            writer.close()
         env.close()
 
-    status = "interrupted" if interrupted else "failed" if failed else "complete"
-    metadata["status"] = status
-    metadata["last_iteration"] = int(getattr(runner, "current_learning_iteration", 0))
-    metadata["final_checkpoint"] = str(final_checkpoint)
-    write_metadata(metadata_path, metadata)
-    print(f"[DICE] Training {status}. Checkpoint: {final_checkpoint}", flush=True)
+        status = "interrupted" if interrupted else "failed" if failed else "complete"
+        artifact_results["manifest"] = {"path": "artifact_manifest.json"}
+        metadata.update(
+            {
+                "status": status,
+                "finished_at": datetime.now().astimezone().isoformat(),
+                "wall_time_seconds": time.monotonic() - started_monotonic,
+                "runner_time_seconds": float(getattr(runner, "tot_time", 0.0)),
+                "total_timesteps_completed": int(getattr(runner, "tot_timesteps", 0)),
+                "last_iteration": current_iteration,
+                "final_checkpoint": str(final_checkpoint),
+                "artifact_exports": artifact_results,
+            }
+        )
+        write_metadata(metadata_path, metadata)
+        # Write the manifest last. Rewriting run.json after the manifest would
+        # make the recorded run.json byte count stale immediately.
+        write_artifact_manifest(output_dir)
+        print(f"[DICE] Training {status}. Checkpoint: {final_checkpoint}", flush=True)
 
 
 if __name__ == "__main__":

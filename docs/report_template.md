@@ -11,13 +11,14 @@
 
 ## Training configuration
 
-- observation dimension: 121
+- actor observation dimension: 126
+- critic state dimension: 247
 - action dimension: 20
 - steps per environment: 32
 - actor/critic architecture: 512, 512, 256, 128
 - PPO clip: 0.2
-- learning rate: 5e-4, adaptive
-- desired KL: 0.016
+- learning rate: 3e-4, fixed
+- desired KL: inactive under fixed schedule
 - epochs / minibatches: 5 / 4
 - gamma / lambda: 0.99 / 0.95
 

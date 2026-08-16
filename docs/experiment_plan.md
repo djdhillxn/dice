@@ -1,5 +1,19 @@
 # DICE experiment plan
 
+## Simulator contract preflight
+
+Before every full run following an observation, action, controller, or critic
+change, execute:
+
+```bash
+bash scripts/run_training_preflight.sh 64 2
+```
+
+Proceed only if reset reports policy shape `[64, 126]`, critic shape
+`[64, 247]`, and both PPO iterations complete. Check the logged fingertip-load
+proxy saturation; a value near `1.0` means `fingertip_load_scale` must be
+reduced before the full run.
+
 ## Primary run
 
 Run one full-task PPO experiment:
@@ -9,7 +23,7 @@ seed: 42
 environments: 2048
 steps per environment: 32
 maximum iterations: 10000
-checkpoint interval: 250
+checkpoint interval: 1000
 ```
 
 No success thresholds, rewards, object distribution, or command distribution change during training.

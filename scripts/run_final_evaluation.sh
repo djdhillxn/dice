@@ -10,7 +10,8 @@ CHECKPOINT="$1"
 EPISODES="${2:-500}"
 NUM_ENVS="${3:-256}"
 TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
-EVAL_DIR="${4:-evaluation/${TIMESTAMP}}"
+RUN_DIR=$(cd "$(dirname "$CHECKPOINT")" && pwd)
+EVAL_DIR="${4:-${RUN_DIR}/evaluation/${TIMESTAMP}}"
 
 echo "[DICE] Running evaluation output to: ${EVAL_DIR}"
 
@@ -48,4 +49,3 @@ output = {
 (eval_dir / "final_summary.json").write_text(json.dumps(output, indent=2))
 print(json.dumps(output, indent=2))
 PY
-

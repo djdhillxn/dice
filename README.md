@@ -110,33 +110,52 @@ python -u scripts/train_rsl.py \
   --headless
 ```
 
-`python -u` keeps terminal output unbuffered over SSH. The training script now prints and saves startup milestones before/after Gym creation, the RSL-RL wrapper reset, runner construction, and the PPO learning loop. If startup stalls, inspect the newest `outputs/DICE/<run>/startup.log` rather than guessing which layer is blocked.
+`python -u` keeps terminal output unbuffered over SSH. The training script now prints and saves startup milestones before/after Gym creation, the RSL-RL wrapper reset, runner construction, and the PPO learning loop. If startup stalls, inspect the newest `outputs/<run>/startup.log` rather than guessing which layer is blocked.
 
 The repeated `sh: 1: zenity: not found` message is not a request to install `zenity` for headless training. Always use `--headless` on the VM.
+
+Before launching a paid full run after changing observations, actions, or the
+critic state, run the two-iteration simulator contract preflight on the VM:
+
+```bash
+bash scripts/run_training_preflight.sh 64 2
+```
+
+The launcher verifies that the environment returns separate policy and critic
+tensors with the configured dimensions before it constructs PPO storage. A
+successful preflight must complete both PPO iterations and write a run with
+`"status": "complete"` under `outputs/preflight/`.
 
 ### Training artifacts and TensorBoard
 
 Every run writes to:
 
 ```text
-outputs/DICE/<timestamp>_<run_name>/
+outputs/<timestamp>_<run_name>/
 ```
 
 The directory contains:
 
-- `run.json`: command, task, PPO configuration, environment count, rollout length, runtime status, and final checkpoint metadata.
+- `run.json`: command, complete environment/PPO configuration, Git state, hardware/software versions, timing, runtime status, and final checkpoint metadata.
 - `startup.log`: persisted launch-stage breadcrumbs for startup debugging.
 - `events.out.tfevents...`: TensorBoard scalars written by RSL-RL.
-- `model_*.pt`: periodic RSL-RL checkpoints (`save_interval = 250`).
+- `training_metrics.csv`: portable iteration-by-iteration scalar export.
+- `training_summary.json`: first/last/extrema and last-100-iteration means for every scalar.
+- `runtime_logs/`: Isaac Lab and Kit logs produced during this run, when available.
+- `artifact_manifest.json`: complete artifact list and byte sizes for transfer auditing.
+- `model_*.pt`: periodic RSL-RL checkpoints (`save_interval = 1000` by default; override with `--save_interval`).
 - `model_final.pt`: explicit final/interrupted checkpoint from the DICE launcher.
 - `git/*.diff`: repository state captured by RSL-RL on the first learning iteration, including DICE after the runner registers this repository.
+- `evaluation/`: nominal and robust frozen-policy results produced by the evaluation scripts.
 
-RSL-RL logs PPO losses, learning rate, mean policy noise, FPS/collection/learning time, reward, episode length, and every scalar under `extras["log"]`. DICE additionally records alignment, position and angular speed, all three success-gate rates, simultaneous-gate rate, hold-counter tails, command/drop statistics, every reward component, action magnitude/RMS, and action saturation.
+RSL-RL logs PPO losses, learning rate, policy noise, FPS/collection/learning time, reward, episode length, and every scalar under `extras["log"]`. DICE additionally records actor-mean action bounds, alignment, position and angular speed, all three success-gate rates, simultaneous-gate rate, hold-counter tails, command/drop statistics, every reward component, action magnitude/RMS, and action saturation.
+
+`DICE/completion_frequency_per_env_step` is a frequency on the `[0, 1]` scale: it answers “what fraction of environments completed a command on this control step?” It is not a per-command success probability. Use frozen-policy evaluation for `target_face_success_rate`; that value is also stored on `[0, 1]` and should be multiplied by 100 for a percentage.
 
 Start TensorBoard on the VM with:
 
 ```bash
-tensorboard --logdir outputs/DICE --host 127.0.0.1 --port 6006
+tensorboard --logdir outputs --host 127.0.0.1 --port 6006
 ```
 
 Forward port `6006` over SSH from your local machine and open `http://localhost:6006`. RSL-RL also prints its native detailed PPO summary after every learning iteration, so no custom chunked `runner.learn()` loop is required.
@@ -148,9 +167,10 @@ Forward port `6006` over SSH from your local machine and open `http://localhost:
 | Script | Purpose | CLI Command Example |
 |---|---|---|
 | `scripts/train_rsl.py` | Primary RSL-RL PPO training with live terminal progress bar & metrics | `python -u scripts/train_rsl.py --task DICE-Shadow-Train-v0 --num_envs 2048 --max_iterations 10000 --run_name strong_run --headless` |
-| `scripts/evaluate_rsl.py` | Nominal or robust evaluation with progress bar & JSON/CSV outputs | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/DICE/<run>/model_final.pt --episodes 500` |
-| `scripts/run_final_evaluation.sh` | Runs both nominal and robust evaluations and generates `final_summary.json` | `bash scripts/run_final_evaluation.sh outputs/DICE/<run>/model_final.pt 500 256` |
-| `scripts/play_rsl.py` | Renders continuous 6-face sequence (`1 -> 6 -> 3 -> 5 -> 2 -> 4`) | `python scripts/play_rsl.py --task DICE-Shadow-Play-v0 --checkpoint outputs/DICE/<run>/model_final.pt --output videos/DICE` |
+| `scripts/run_training_preflight.sh` | Two-iteration actor/critic contract and PPO smoke test | `bash scripts/run_training_preflight.sh 64 2` |
+| `scripts/evaluate_rsl.py` | Nominal or robust evaluation with progress bar & JSON/CSV outputs inside the checkpoint run | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/<run>/model_final.pt --episodes 500` |
+| `scripts/run_final_evaluation.sh` | Runs both nominal and robust evaluations under the checkpoint run and generates `final_summary.json` | `bash scripts/run_final_evaluation.sh outputs/<run>/model_final.pt 500 256` |
+| `scripts/play_rsl.py` | Renders continuous 6-face sequence (`1 -> 6 -> 3 -> 5 -> 2 -> 4`) | `python scripts/play_rsl.py --task DICE-Shadow-Play-v0 --checkpoint outputs/<run>/model_final.pt --output videos/DICE` |
 | `scripts/annotate_video.py` | Overlays live telemetry metrics (target, top face, alignment, hold) onto rendered MP4 | `python scripts/annotate_video.py --video videos/DICE/raw/DICE.mp4 --metrics videos/DICE/video_metrics.csv --output videos/DICE/annotated.mp4` |
 
 ---
@@ -189,27 +209,38 @@ In naive setups, policies receive a static posture reward proportional to how cl
 
 ---
 
-## 4. Observation Space (121 Dimensions)
+## 4. Actor and Critic Observations
 
 The action space is Isaac Lab's 20-dimensional continuous Shadow Hand joint targets.
 
-The policy receives a **121-dimensional task-aligned** observation space:
+The policy receives a **126-dimensional task-aligned** observation space:
 
 - **Hand proprioception** (48 dims): 24 normalized joint positions and 24 scaled joint velocities.
-- **Previous action** (20 dims): The joint command applied on the preceding control step.
-- **Fingertip state** (30 dims): Five cube-relative fingertip positions and five world-frame linear velocities.
+- **Applied controller state** (20 dims): Normalized smoothed joint targets currently applied to the hand.
+- **Fingertip state** (30 dims): Five cube-frame fingertip positions and five cube-frame relative linear velocities.
 - **Cube translation and velocity** (9 dims): Position relative to the nominal in-hand center plus linear and angular velocity.
 - **Cube orientation** (6 dims): Continuous 6D rotation representation.
 - **Command geometry** (7 dims): Commanded face normal in world coordinates, its alignment with world-up, and the cross-product rotation-axis error.
 - **Hold progress** (1 dim): Normalized hold counter `hold_counter / 20`.
+- **Fingertip load proxies** (5 dims): Bounded force magnitudes derived from incoming fingertip joint reaction wrenches.
+
+The asymmetric critic receives a **247-dimensional privileged state** containing
+the actor observation, full fingertip reaction wrenches and spatial velocities,
+object pose and velocity, and raw hand joint state.
+
+The 126-dimensional actor is not checkpoint-compatible with the earlier
+121-dimensional policy. Start this configuration from a fresh policy. Evaluate
+older checkpoints with the repository revision and observation contract that
+created them.
 
 ---
 
 ## 5. RSL-RL PPO Configuration
 
 - **Rollout Length**: `num_steps_per_env = 32` (65,536 transitions per update with 2,048 environments).
-- **Optimizer**: Adam with adaptive KL learning rate schedule (`desired_kl = 0.016`, initial LR `5e-4`).
-- **Network**: Shared depth `[512, 512, 256, 128]` with ELU activations and observation normalization.
+- **Optimizer**: Adam with a fixed `3e-4` learning rate.
+- **Exploration**: Direct scalar standard deviation initialized at `0.6`, with no entropy bonus.
+- **Networks**: Separate actor and critic MLPs with `[512, 512, 256, 128]`, ELU activations, and observation normalization.
 - **Discount & GAE**: `gamma = 0.99`, `lambda = 0.95`.
 
 ---
@@ -228,14 +259,14 @@ python scripts/train_rsl.py \
 
 ### Evaluation
 ```bash
-bash scripts/run_final_evaluation.sh outputs/DICE/<timestamp>_strong_run/model_final.pt 500 256
+bash scripts/run_final_evaluation.sh outputs/<timestamp>_strong_run/model_final.pt 500 256
 ```
 
 ### Rendering Video
 ```bash
 python scripts/play_rsl.py \
   --task DICE-Shadow-Play-v0 \
-  --checkpoint outputs/DICE/<timestamp>_strong_run/model_final.pt \
+  --checkpoint outputs/<timestamp>_strong_run/model_final.pt \
   --output videos/DICE
 ```
 

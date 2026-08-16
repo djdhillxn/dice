@@ -25,21 +25,27 @@ Upon achieving success, the environment immediately assigns a new target face wi
 
 ---
 
-## 3. Observation Space Design (121 Dimensions)
+## 3. Observation Space Design
 
-The policy uses a compact, continuous **121-dimensional** task-aligned observation:
+The policy uses a compact, continuous **126-dimensional** task-aligned observation:
 
 | Observation Feature | Dimensions | Description |
 |---|---|---|
 | **Hand joint position and velocity** | 48 | 24 normalized positions and 24 scaled velocities |
-| **Previous action** | 20 | Joint command applied on the preceding control step |
-| **Cube-relative fingertip position** | 15 | Five fingertip position vectors |
-| **Fingertip linear velocity** | 15 | Five world-frame linear-velocity vectors |
+| **Smoothed applied joint targets** | 20 | Normalized state of the low-pass joint-target controller |
+| **Cube-frame fingertip position** | 15 | Five cube-relative position vectors expressed in the cube frame |
+| **Cube-frame relative fingertip velocity** | 15 | Five fingertip-minus-cube linear-velocity vectors |
 | **Cube translation and velocity** | 9 | Relative position, linear velocity, and angular velocity |
 | **Cube rotation** | 6 | Continuous 6D orientation representation |
 | **Command geometry** | 7 | Commanded world normal, vertical alignment, and rotation-axis error |
 | **Hold Progress** | 1 | Continuous scalar $\frac{\text{hold\_counter}}{20} \in [0.0, 1.0]$ |
-| **Total Observation Dimension** | **121** | Compact, task-aligned policy input |
+| **Fingertip reaction-load proxies** | 5 | Bounded magnitudes derived from incoming joint reaction wrenches |
+| **Total Actor Observation Dimension** | **126** | Compact, task-aligned policy input |
+
+An asymmetric **247-dimensional critic state** augments the actor observation
+with full fingertip reaction wrenches and spatial velocities, object state, and
+raw hand joint state. The actor does not receive those additional privileged
+features.
 
 ---
 
@@ -56,7 +62,8 @@ $$\mathcal{R}_{\text{progress}} = c_{\text{progress}} \times (\text{alignment}_t
 * **Success Completion Bonus**: $+250.0$ upon reaching step 20 of hold. Primary driver of return.
 * **Drop Penalty**: $-50.0$ if position error exceeds $0.24\text{m}$.
 * **Position Error Penalty**: $-2.0 \times \|\mathbf{p}_{\text{die}} - \mathbf{p}_{\text{palm}}\|$.
-* **Action-Rate Penalty**: $-0.01 \times \|\mathbf{a}_t-\mathbf{a}_{t-1}\|^2$; there is no separate action-magnitude penalty.
+* **Applied-Target Rate Penalty**: $-0.01 \times \|\mathbf{u}_t-\mathbf{u}_{t-1}\|^2$, where $\mathbf{u}$ is the normalized smoothed joint-target state; there is no separate action-magnitude penalty.
+* **Settling Penalty**: A continuous orientation weight grows from zero at $45^\circ$ to one at $16^\circ$ and multiplies $-0.05\|\boldsymbol{\omega}_{\text{die}}\|^2$.
 
 ---
 
@@ -67,8 +74,8 @@ $$\mathcal{R}_{\text{progress}} = c_{\text{progress}} \times (\text{alignment}_t
 * **Total Training Iterations**: 10,000
 * **Network Architecture**: Policy & Value MLPs $[512, 512, 256, 128]$ with ELU activations
 * **Observation Normalization**: Enabled
-* **Exploration**: Initial policy noise standard deviation `0.8` and entropy coefficient `0.005`
-* **Learning Rate**: $5 \times 10^{-4}$ with adaptive KL schedule (`desired_kl = 0.016`)
+* **Exploration**: Direct scalar policy-noise standard deviation initialized at `0.6`, with entropy coefficient `0.0`
+* **Learning Rate**: Fixed $3 \times 10^{-4}$
 * **GAE Discount & Lambda**: $\gamma = 0.99, \lambda = 0.95$
 
 ---

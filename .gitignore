@@ -1,0 +1,12 @@
+.DS_Store
+.vscode/
+
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+*.egg-info/
+
+outputs/
+evaluation/
+videos/

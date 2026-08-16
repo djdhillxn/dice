@@ -14,9 +14,11 @@ from isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env import (
     InHandManipulationEnv,
 )
 
+from dicedial.control import normalize_selected_joint_targets
 from dicedial.geometry import (
     FACE_NORMALS,
     FACE_UP_QUATERNIONS,
+    rotate_vector_inverse_wxyz,
     rotate_vector_wxyz,
     rotation_6d_from_quaternion_wxyz,
     top_face,
@@ -57,7 +59,7 @@ class DiceEnv(InHandManipulationEnv):
             self.hand.joint_names.index(joint_name)
             for joint_name in cfg.actuated_joint_names
         )
-        self.prev_actions = torch.zeros(
+        self.previous_applied_targets = torch.zeros(
             (self.num_envs, len(self.actuated_dof_indices)),
             dtype=torch.float,
             device=self.device,
@@ -205,6 +207,17 @@ class DiceEnv(InHandManipulationEnv):
         local_normals = self.face_normals[target_faces.long() - 1]
         return rotate_vector_wxyz(object_quaternion, local_normals)[..., 2]
 
+    def _compute_normalized_cur_targets(self, env_ids=None):
+        """Return cur_targets normalized through joint limits into [-1, 1]."""
+
+        return normalize_selected_joint_targets(
+            self.cur_targets,
+            self.hand_dof_lower_limits,
+            self.hand_dof_upper_limits,
+            self.actuated_dof_indices,
+            env_ids,
+        )
+
     def reset(self, seed=None, options=None):
         """Perform the first reset with precise startup-stage diagnostics.
 
@@ -255,14 +268,14 @@ class DiceEnv(InHandManipulationEnv):
         return observations, self.extras
 
     def compute_full_observations(self):
-        """Return a clean 121-dimensional task-aligned actor observation.
+        """Return the frame-consistent actor observation tensor.
 
-        Features (121 total):
+        Actor Features (126 total):
         - Normalized hand joint positions: 24
         - Scaled hand joint velocities: 24
-        - Previous actions: 20
-        - Fingertip positions relative to cube: 15
-        - Fingertip linear velocities: 15
+        - Previous normalized applied joint targets: 20
+        - Fingertip positions relative to cube in CUBE FRAME: 15
+        - Fingertip linear velocities relative to cube in CUBE FRAME: 15
         - Cube position relative to in-hand center: 3
         - Cube linear velocity: 3
         - Cube angular velocity: 3
@@ -271,12 +284,16 @@ class DiceEnv(InHandManipulationEnv):
         - Commanded face alignment with world up (+Z): 1
         - Rotation axis error vector (cross product with +Z): 3
         - Normalized hold progress: 1
+        - Bounded fingertip reaction-load proxy magnitudes: 5
+
+        The inherited ``_get_observations`` method wraps this tensor under the
+        ``policy`` key and calls ``compute_full_state`` for the critic tensor.
         """
 
         first_observation = getattr(self, "_initial_observation_pending", False)
         if first_observation:
             self._startup_log(
-                self.cfg, "First observation: assembling the 121 policy features."
+                self.cfg, "First observation: assembling actor and critic features."
             )
 
         normalized_joint_pos = (
@@ -287,13 +304,34 @@ class DiceEnv(InHandManipulationEnv):
         )
         scaled_joint_vel = self.hand_dof_vel * 0.2
 
-        relative_fingertip_pos = (
-            self.fingertip_pos - self.object_pos.unsqueeze(1)
+        # 1. Fingertip-minus-cube position in CUBE FRAME (15 dims)
+        relative_fingertip_pos_world = self.fingertip_pos - self.object_pos.unsqueeze(1)
+        object_rot_expanded = self.object_rot.unsqueeze(1).expand(
+            -1, self.num_fingertips, -1
+        )
+        fingertip_pos_cube_frame = rotate_vector_inverse_wxyz(
+            object_rot_expanded, relative_fingertip_pos_world
         ).reshape(self.num_envs, -1)
-        # Isaac Lab exposes one 6D spatial velocity per fingertip. The first
-        # three entries are linear velocity; there is no `fingertip_linvel`
-        # attribute in InHandManipulationEnv.
-        fingertip_linvel = self.fingertip_velocities[..., :3].reshape(self.num_envs, -1)
+
+        # 2. Fingertip linear velocity minus cube linear velocity in CUBE FRAME (15 dims)
+        fingertip_linvel_world = self.fingertip_velocities[..., :3]
+        object_linvel_expanded = self.object_linvel.unsqueeze(1)
+        relative_fingertip_vel_world = fingertip_linvel_world - object_linvel_expanded
+        fingertip_linvel_cube_frame = rotate_vector_inverse_wxyz(
+            object_rot_expanded, relative_fingertip_vel_world
+        ).reshape(self.num_envs, -1)
+
+        # 3. Bounded fingertip-load proxy magnitudes (5 dims). Isaac Lab's
+        # Shadow Hand exposes incoming joint reaction wrenches rather than net
+        # contact forces. Their force-vector norms are useful contact/load
+        # proxies, but intentionally are not described as contact sensors.
+        fingertip_wrenches = self.fingertip_force_sensors
+        fingertip_force_magnitudes = torch.linalg.vector_norm(
+            fingertip_wrenches[..., :3], dim=-1
+        )
+        fingertip_load_proxies = torch.clamp(
+            fingertip_force_magnitudes * self.cfg.fingertip_load_scale, 0.0, 1.0
+        )
 
         relative_object_pos = self.object_pos - self.in_hand_pos
         cube_rotation_6d = rotation_6d_from_quaternion_wxyz(self.object_rot)
@@ -304,7 +342,6 @@ class DiceEnv(InHandManipulationEnv):
         )
 
         alignment = commanded_world_normals[:, 2:3]
-
         axis_error = torch.cross(commanded_world_normals, self.world_up, dim=-1)
 
         hold_progress = (
@@ -313,13 +350,13 @@ class DiceEnv(InHandManipulationEnv):
             .unsqueeze(-1)
         )
 
-        observation = torch.cat(
+        actor_observation = torch.cat(
             (
                 normalized_joint_pos,
                 scaled_joint_vel,
-                self.prev_actions,
-                relative_fingertip_pos,
-                fingertip_linvel,
+                self.previous_applied_targets,
+                fingertip_pos_cube_frame,
+                fingertip_linvel_cube_frame,
                 relative_object_pos,
                 self.object_linvel,
                 self.object_angvel,
@@ -328,23 +365,81 @@ class DiceEnv(InHandManipulationEnv):
                 alignment,
                 axis_error,
                 hold_progress,
+                fingertip_load_proxies,
             ),
             dim=-1,
         )
 
-        expected_shape = (self.num_envs, int(self.cfg.observation_space))
-        if observation.shape != expected_shape:
+        expected_actor_shape = (self.num_envs, int(self.cfg.observation_space))
+        if actor_observation.shape != expected_actor_shape:
             raise RuntimeError(
-                f"DICE observation shape mismatch: got {tuple(observation.shape)}, "
-                f"expected {expected_shape}."
+                f"DICE actor observation shape mismatch: got {tuple(actor_observation.shape)}, "
+                f"expected {expected_actor_shape}."
             )
+        if first_observation and not torch.isfinite(actor_observation).all():
+            raise RuntimeError("DICE actor observation contains NaN or Inf values!")
+
+        # The parent calls compute_full_state immediately after this method.
+        # Cache the exact actor tensor so the privileged state can include it
+        # without rebuilding all frame transforms a second time.
+        self._latest_actor_observation = actor_observation
+        self._latest_fingertip_load_proxies = fingertip_load_proxies
+        return actor_observation
+
+    def compute_full_state(self):
+        """Return the 247-dimensional asymmetric critic observation.
+
+        Features:
+        - Full actor observation: 126
+        - Fingertip 6D incoming joint reaction wrenches: 30
+        - Fingertip 6D spatial velocities: 30
+        - Object position, quaternion, linear and angular velocity: 13
+        - Raw hand joint positions and velocities: 48
+        """
+
+        actor_observation = getattr(self, "_latest_actor_observation", None)
+        if actor_observation is None:
+            actor_observation = self.compute_full_observations()
+
+        critic_observation = torch.cat(
+            (
+                actor_observation,
+                self.fingertip_force_sensors.reshape(self.num_envs, -1),
+                self.fingertip_velocities.reshape(self.num_envs, -1),
+                self.object_pos,
+                self.object_rot,
+                self.object_linvel,
+                self.object_angvel,
+                self.hand_dof_pos,
+                self.hand_dof_vel,
+            ),
+            dim=-1,
+        )
+        expected_critic_shape = (self.num_envs, int(self.cfg.state_space))
+        if critic_observation.shape != expected_critic_shape:
+            raise RuntimeError(
+                f"DICE critic state shape mismatch: got {tuple(critic_observation.shape)}, "
+                f"expected {expected_critic_shape}."
+            )
+
+        first_observation = getattr(self, "_initial_observation_pending", False)
         if first_observation:
+            if not torch.isfinite(critic_observation).all():
+                raise RuntimeError("DICE critic state contains NaN or Inf values!")
+            load_proxy_mean = self._latest_fingertip_load_proxies.mean().item()
+            load_proxy_saturation = (
+                (self._latest_fingertip_load_proxies >= 0.999).float().mean().item()
+            )
             self._initial_observation_pending = False
             self._startup_log(
                 self.cfg,
-                f"First observation ready with shape {tuple(observation.shape)}.",
+                f"First observation ready (actor: {tuple(actor_observation.shape)}, "
+                f"critic: {tuple(critic_observation.shape)}, "
+                f"load proxy mean: {load_proxy_mean:.4f}, "
+                f"saturation: {load_proxy_saturation:.4f}).",
             )
-        return observation
+
+        return critic_observation
 
     # ------------------------------------------------------------------
     # Reward
@@ -374,30 +469,32 @@ class DiceEnv(InHandManipulationEnv):
 
         position_penalty = self.cfg.position_error_scale * position_error
 
-        angular_gate = math.cos(math.radians(self.cfg.angular_penalty_gate_deg))
-        near_target = alignment >= angular_gate
-        angular_speed_excess = torch.relu(
-            angular_speed - self.cfg.success_angular_speed
+        gate_45_deg = math.cos(
+            math.radians(getattr(self.cfg, "angular_penalty_gate_deg", 45.0))
         )
+        target_16_deg = math.cos(math.radians(self.cfg.success_angle_deg))
+        smooth_target_weight = (
+            (alignment - gate_45_deg) / max(target_16_deg - gate_45_deg, 1.0e-5)
+        ).clamp(0.0, 1.0)
+
         angular_penalty = (
-            self.cfg.angular_speed_scale
-            * angular_speed_excess.square()
-            * near_target.float()
+            self.cfg.angular_speed_scale * smooth_target_weight * angular_speed.square()
         )
 
         action_penalty = self.cfg.action_penalty_scale * torch.sum(
             self.actions.square(), dim=-1
         )
-        action_rate = self.actions - self.prev_actions
+        normalized_cur_targets = self._compute_normalized_cur_targets()
+        applied_target_rate = normalized_cur_targets - self.previous_applied_targets
         action_rate_penalty_scale = getattr(
             self.cfg, "action_rate_penalty_scale", -0.01
         )
         action_rate_penalty = action_rate_penalty_scale * torch.sum(
-            action_rate.square(), dim=-1
+            applied_target_rate.square(), dim=-1
         )
         drop_penalty = self.cfg.drop_penalty * out_of_reach.float()
 
-        action_rate_rms = torch.sqrt(action_rate.square().mean())
+        action_rate_rms = torch.sqrt(applied_target_rate.square().mean())
 
         joint_range = self.hand_dof_upper_limits - self.hand_dof_lower_limits
         near_lower = self.hand_dof_pos <= (
@@ -455,7 +552,7 @@ class DiceEnv(InHandManipulationEnv):
         if current_top_face is not None:
             self.last_top_face.copy_(current_top_face)
         self.last_out_of_reach.copy_(out_of_reach)
-        self.prev_actions.copy_(self.actions)
+        self.previous_applied_targets.copy_(normalized_cur_targets)
 
         # torch.nonzero safely yields an empty tensor when no command was
         # completed, so the indexed updates below need no Python-side branch.
@@ -485,6 +582,22 @@ class DiceEnv(InHandManipulationEnv):
         dt = getattr(self, "step_dt", 0.016666666)
         sim_time_min = ((self.episode_length_buf.float() + 1.0) * dt) / 60.0
         latencies_sec = self.last_success_latency * dt
+        completion_frequency = success.float().mean()
+        # RSL-RL averages each logged scalar uniformly over rollout steps.
+        # Log additive per-environment-step quantities here, rather than a
+        # conditional per-step ratio that would be diluted by steps with zero
+        # completions. Offline, divide the latency sum/frequency values by
+        # completion_frequency to obtain conditional completion statistics.
+        completion_latency_sum_per_env_step = latencies_sec.mean()
+        completion_within_2s_frequency = (
+            (self.last_success & (latencies_sec <= 2.0)).float().mean()
+        )
+        completion_within_4s_frequency = (
+            (self.last_success & (latencies_sec <= 4.0)).float().mean()
+        )
+        completion_within_6s_frequency = (
+            (self.last_success & (latencies_sec <= 6.0)).float().mean()
+        )
 
         is_adj = transition_type == 1
         is_opp = transition_type == 2
@@ -505,25 +618,29 @@ class DiceEnv(InHandManipulationEnv):
         log["DICE/position_error"] = position_error.mean()
         log["DICE/angular_speed"] = angular_speed.mean()
         log["DICE/hold_progress"] = hold_progress.mean()
-        log["DICE/success_rate_per_step"] = success.float().mean()
-        log["DICE/active_env_has_at_least_1_success_rate"] = (
+        log["DICE/completion_frequency_per_env_step"] = completion_frequency
+        log["DICE/completions_per_1000_env_steps"] = completion_frequency * 1_000.0
+        log["DICE/active_episode_any_completion_fraction"] = (
             (self.successes >= 1).float().mean()
         )
-        log["DICE/commands_in_active_episode"] = self.successes.float().mean()
+        log["DICE/mean_completions_in_active_episode"] = self.successes.float().mean()
         log["DICE/commands_per_active_sim_minute"] = (
             self.successes.float() / sim_time_min.clamp_min(0.01)
         ).mean()
-        log["DICE/success_event_within_2s_rate"] = (
-            (self.last_success & (latencies_sec <= 2.0)).float().mean()
+        log["DICE/completion_latency_seconds_sum_per_env_step"] = (
+            completion_latency_sum_per_env_step
         )
-        log["DICE/success_event_within_4s_rate"] = (
-            (self.last_success & (latencies_sec <= 4.0)).float().mean()
+        log["DICE/completion_within_2s_frequency_per_env_step"] = (
+            completion_within_2s_frequency
         )
-        log["DICE/success_event_within_6s_rate"] = (
-            (self.last_success & (latencies_sec <= 6.0)).float().mean()
+        log["DICE/completion_within_4s_frequency_per_env_step"] = (
+            completion_within_4s_frequency
         )
-        log["DICE/success_event_rate_adjacent_transitions"] = adj_success
-        log["DICE/success_event_rate_opposite_transitions"] = opp_success
+        log["DICE/completion_within_6s_frequency_per_env_step"] = (
+            completion_within_6s_frequency
+        )
+        log["DICE/completion_frequency_adjacent_per_env_step"] = adj_success
+        log["DICE/completion_frequency_opposite_per_env_step"] = opp_success
         log["DICE/max_hold_in_unsuccessful_active_commands"] = failed_max_hold
         log["DICE/drop_rate_per_step"] = out_of_reach.float().mean()
         log["DICE/gate_angle_rate"] = (alignment >= success_angle).float().mean()
@@ -553,6 +670,12 @@ class DiceEnv(InHandManipulationEnv):
         log["DICE/joint_limit_saturation"] = joint_limit_saturation
         log["DICE/action_saturation_rate"] = (
             (self.actions.abs() >= 0.999).float().mean()
+        )
+        log["DICE/fingertip_load_proxy_mean"] = (
+            self._latest_fingertip_load_proxies.mean()
+        )
+        log["DICE/fingertip_load_proxy_saturation_rate"] = (
+            (self._latest_fingertip_load_proxies >= 0.999).float().mean()
         )
 
         self.extras["log"] = log
@@ -615,7 +738,9 @@ class DiceEnv(InHandManipulationEnv):
 
         self.hold_counter[env_ids] = 0
         self.command_age_steps[env_ids] = 0
-        self.prev_actions[env_ids] = 0.0
+        self.previous_applied_targets[env_ids] = self._compute_normalized_cur_targets(
+            env_ids
+        )
         self.last_success_latency[env_ids] = 0.0
         self.last_success[env_ids] = False
         self.last_out_of_reach[env_ids] = False

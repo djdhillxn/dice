@@ -7,6 +7,7 @@ import torch
 from dicedial.geometry import (
     FACE_UP_QUATERNIONS,
     normalize_quaternion,
+    rotate_vector_inverse_wxyz,
     rotate_vector_wxyz,
     rotation_6d_from_quaternion_wxyz,
     target_face_alignment,
@@ -55,6 +56,21 @@ class TestGeometry(unittest.TestCase):
                     self.assertFalse(
                         is_opp, f"Expected {f1} and {f2} not to be opposite"
                     )
+
+    def test_inverse_rotation(self):
+        # Exercise the [num_envs, num_fingertips, ...] broadcast shape used by
+        # the environment, not only one axis-aligned quaternion/vector pair.
+        q_rot = torch.tensor(
+            [
+                [0.7071068, 0.0, 0.7071068, 0.0],
+                [0.8660254, 0.2886751, 0.2886751, 0.2886751],
+            ]
+        )
+        q_rot = q_rot[:, None, :].expand(-1, 5, -1)
+        vec = torch.randn(2, 5, 3)
+        rotated_forward = rotate_vector_wxyz(q_rot, vec)
+        rotated_back = rotate_vector_inverse_wxyz(q_rot, rotated_forward)
+        self.assertTrue(torch.allclose(rotated_back, vec, atol=1e-5))
 
 
 if __name__ == "__main__":

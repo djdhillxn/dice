@@ -16,7 +16,11 @@ parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--episodes", type=int, default=500)
 parser.add_argument("--num_envs", type=int, default=256)
 parser.add_argument("--seed", type=int, default=2026)
-parser.add_argument("--output", default="evaluation/nominal")
+parser.add_argument(
+    "--output",
+    default=None,
+    help="Output directory. Defaults to <checkpoint-run>/evaluation/<task-kind>.",
+)
 parser.add_argument(
     "--disable_fabric",
     action="store_true",
@@ -61,7 +65,13 @@ def _numpy_tensor(extras, key, fallback, dtype=None):
 
 def main():
     device = args.device or "cuda:0"
-    output_dir = Path(args.output).resolve()
+    checkpoint_source = Path(args.checkpoint).expanduser().resolve()
+    checkpoint = compatible_checkpoint_path(checkpoint_source)
+    if args.output:
+        output_dir = Path(args.output).resolve()
+    else:
+        task_kind = "robust" if "Robust" in args.task else "nominal"
+        output_dir = checkpoint_source.parent / "evaluation" / task_kind
     output_dir.mkdir(parents=True, exist_ok=True)
 
     agent_cfg = make_runner_cfg(seed=args.seed, device=device)
@@ -82,7 +92,6 @@ def main():
         log_dir=None,
         device=agent_cfg.device,
     )
-    checkpoint = compatible_checkpoint_path(Path(args.checkpoint).expanduser().resolve())
     runner.load(checkpoint)
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
@@ -98,13 +107,20 @@ def main():
     episode_rows = []
     total_successes = 0
     total_drops = 0
+    action_abs_sum = 0.0
+    action_square_sum = 0.0
+    action_out_of_bounds_count = 0
+    action_value_count = 0
     committed_latencies = []
     per_face_successes = np.zeros(6, dtype=np.int64)
     per_face_attempts = np.zeros(6, dtype=np.int64)
 
     try:
         from tqdm import tqdm
-        pbar = tqdm(total=args.episodes, desc="[DICE Evaluation]", unit="ep", dynamic_ncols=True)
+
+        pbar = tqdm(
+            total=args.episodes, desc="[DICE Evaluation]", unit="ep", dynamic_ncols=True
+        )
     except ImportError:
         pbar = None
 
@@ -113,6 +129,10 @@ def main():
     while len(episode_rows) < args.episodes:
         with torch.inference_mode():
             actions = policy(observations)
+            action_abs_sum += float(actions.abs().sum().item())
+            action_square_sum += float(actions.square().sum().item())
+            action_out_of_bounds_count += int((actions.abs() >= 1.0).sum().item())
+            action_value_count += actions.numel()
             observations, rewards, dones, extras = env.step(actions)
 
         reward_array = rewards.detach().cpu().numpy()
@@ -184,7 +204,10 @@ def main():
             committed_latencies.extend(pending_latencies[env_index])
 
             active_face = int(target_faces[env_index])
-            unfinished_command = not final_step_success
+            # Training/evaluation immediately issues another target after a
+            # completion. Therefore an episode that ends on a success event
+            # still has a newly-issued unfinished command.
+            unfinished_command = True
             if unfinished_command and 1 <= active_face <= 6:
                 per_face_attempts[active_face - 1] += 1
 
@@ -212,10 +235,12 @@ def main():
             added = len(episode_rows) - last_ep_count
             last_ep_count = len(episode_rows)
             pbar.update(added)
-            pbar.set_postfix({
-                "MeanCmds": f"{total_successes / max(len(episode_rows), 1):.2f}",
-                "DropRate": f"{total_drops / max(len(episode_rows), 1):.3f}",
-            })
+            pbar.set_postfix(
+                {
+                    "MeanCmds": f"{total_successes / max(len(episode_rows), 1):.2f}",
+                    "DropRate": f"{total_drops / max(len(episode_rows), 1):.3f}",
+                }
+            )
 
         if hasattr(policy, "reset"):
             policy.reset(dones)
@@ -229,6 +254,16 @@ def main():
     attempted_commands = int(per_face_attempts.sum())
     control_dt = float(env.unwrapped.step_dt)
     latency_array = np.asarray(committed_latencies, dtype=np.float64)
+    total_sim_seconds = float(frame["episode_length"].sum() * control_dt)
+    episode_any_completion_fraction = float((frame["commands_completed"] >= 1).mean())
+
+    policy_module = runner.alg.policy
+    if hasattr(policy_module, "log_std"):
+        checkpoint_noise = policy_module.log_std.detach().exp()
+    elif hasattr(policy_module, "std"):
+        checkpoint_noise = policy_module.std.detach()
+    else:
+        checkpoint_noise = None
 
     summary = {
         "project": "DICE",
@@ -238,7 +273,15 @@ def main():
         "episodes": int(len(frame)),
         "successful_commands": int(total_successes),
         "attempted_commands": attempted_commands,
+        "issued_command_completion_rate": float(
+            total_successes / max(attempted_commands, 1)
+        ),
         "target_face_success_rate": float(total_successes / max(attempted_commands, 1)),
+        "episode_any_completion_fraction": episode_any_completion_fraction,
+        "zero_completion_episode_fraction": 1.0 - episode_any_completion_fraction,
+        "completed_commands_per_sim_minute": float(
+            total_successes / max(total_sim_seconds / 60.0, 1.0e-8)
+        ),
         "median_time_to_target_steps": (
             float(np.median(latency_array)) if latency_array.size else None
         ),
@@ -249,14 +292,31 @@ def main():
         "mean_consecutive_commands": float(frame["commands_completed"].mean()),
         "median_consecutive_commands": float(frame["commands_completed"].median()),
         "max_consecutive_commands": int(frame["commands_completed"].max()),
+        "deterministic_action_mean_abs": float(
+            action_abs_sum / max(action_value_count, 1)
+        ),
+        "deterministic_action_rms": float(
+            np.sqrt(action_square_sum / max(action_value_count, 1))
+        ),
+        "deterministic_action_out_of_bounds_fraction": float(
+            action_out_of_bounds_count / max(action_value_count, 1)
+        ),
+        "checkpoint_noise_std": (
+            {
+                "minimum": float(checkpoint_noise.min().item()),
+                "mean": float(checkpoint_noise.mean().item()),
+                "maximum": float(checkpoint_noise.max().item()),
+            }
+            if checkpoint_noise is not None
+            else None
+        ),
         "control_dt_seconds": control_dt,
         "per_face": {
             str(face): {
                 "successes": int(per_face_successes[face - 1]),
                 "attempts": int(per_face_attempts[face - 1]),
                 "success_rate": float(
-                    per_face_successes[face - 1]
-                    / max(per_face_attempts[face - 1], 1)
+                    per_face_successes[face - 1] / max(per_face_attempts[face - 1], 1)
                 ),
             }
             for face in range(1, 7)

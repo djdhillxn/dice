@@ -14,14 +14,14 @@ The single-environment play configuration replaces it with the local numbered di
 
 ## Policy interface
 
-The actor receives a clean 121-dimensional task-aligned observation:
+The actor receives a 126-dimensional frame-consistent deployable observation:
 
 ```text
 24 normalized hand joint positions
 24 scaled hand joint velocities
-20 previous actions
-15 relative fingertip positions (5 x 3)
-15 fingertip linear velocities (5 x 3)
+20 normalized smoothed applied joint targets
+15 relative fingertip positions in CUBE FRAME (5 x 3)
+15 relative fingertip linear velocities in CUBE FRAME (5 x 3)
  3 relative cube position
  3 cube linear velocity
  3 cube angular velocity
@@ -30,11 +30,32 @@ The actor receives a clean 121-dimensional task-aligned observation:
  1 commanded face alignment (+Z)
  3 rotation axis error (cross product with +Z)
  1 normalized hold progress
+ 5 bounded fingertip reaction-load proxy magnitudes
 ---
-121 total
+126 total actor observation
 ```
 
-The action remains the inherited 20-dimensional joint-target action.
+The asymmetric critic receives a 247-dimensional privileged state observation:
+
+```text
+126 full actor observation
+ 30 fingertip 6D incoming joint reaction wrenches (body frame)
+ 30 fingertip 6D spatial velocities
+  3 environment-local object position
+  4 object rotation (world-frame wxyz quat)
+  3 object linear velocity (world frame)
+  3 object angular velocity (world frame)
+ 24 raw hand joint positions
+ 24 raw hand joint velocities
+---
+247 total critic state
+```
+
+The five actor load features are bounded magnitudes derived from the force
+components of the fingertip incoming joint reaction wrenches. They are useful
+grasp-load proxies, but they are not dedicated net-contact sensors.
+
+The action space remains the 20-dimensional joint-target action.
 
 ## Command transition
 

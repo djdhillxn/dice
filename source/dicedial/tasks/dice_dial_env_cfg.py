@@ -83,12 +83,13 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
 
     The inherited Shadow Hand task supplies the hand, stock instanceable cube,
     contacts, action controller, and reset logic. DICE uses a rebuilt,
-    task-aligned 121-dimensional actor observation.
+    task-aligned 126-dimensional actor observation and an asymmetric critic.
     """
 
-    observation_space = 121
+    observation_space = 126
     action_space = 20
-    state_space = 0
+    state_space = 247
+    asymmetric_obs = True
     obs_type = "full"
 
     scene = InteractiveSceneCfg(
@@ -120,13 +121,18 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
     # earns +2.0, while breaking a k-step partial hold claws back that progress.
     hold_progress_scale = 40.0
     position_error_scale = -2.0
-    # Penalize squared angular-speed excess only near the requested face.
-    angular_speed_scale = -0.25
-    angular_penalty_gate_deg = 30.0
+    # Smooth settling penalty on squared angular speed near the target face (45 deg to 16 deg).
+    angular_speed_scale = -0.05
+    angular_penalty_gate_deg = 45.0
     action_penalty_scale = 0.0
     action_rate_penalty_scale = -0.01
     success_bonus = 250.0
     drop_penalty = -50.0
+
+    # Converts the fingertip reaction-force norm into a bounded [0, 1] actor
+    # load proxy. The training log records its mean and saturation fraction so
+    # this scale can be calibrated from real simulator values.
+    fingertip_load_scale = 0.1
 
     # Per-environment tensors are unnecessary during PPO collection. Scalar
     # training logs remain active; detailed step metrics are enabled only for
