@@ -8,6 +8,7 @@ from pathlib import Path
 from dicedial.portfolio_video import (
     PRESENTATION_COLLISION_EXTENT_M,
     PRESENTATION_MASS_KG,
+    align_video_telemetry,
     compare_metric_traces,
     compare_physics_snapshots,
     parse_resolution,
@@ -75,6 +76,70 @@ def _write_trace(path, alignment_offset=0.0, event_override=None):
 
 
 class TestPortfolioVideo(unittest.TestCase):
+    def test_video_telemetry_alignment_accepts_only_safe_boundary_cases(self):
+        metrics = [
+            {"step": "0", "done": "0"},
+            {"step": "1", "done": "0"},
+            {"step": "2", "done": "1", "drop": "1"},
+        ]
+        initial = {"step": -1, "done": 0}
+
+        exact = align_video_telemetry(metrics, initial, 3)
+        self.assertEqual(exact["mode"], "post_step")
+        self.assertEqual(exact["frame_rows"], metrics)
+        self.assertEqual(exact["synthesized_rows"], [])
+
+        with_initial = align_video_telemetry(
+            metrics,
+            initial,
+            4,
+            frame_origin="initial_plus_post_step",
+        )
+        self.assertEqual(with_initial["mode"], "initial_plus_post_step")
+        self.assertEqual(with_initial["frame_rows"][0]["step"], "-1")
+
+        initial_missing_terminal = align_video_telemetry(
+            metrics,
+            initial,
+            3,
+            frame_origin="initial_plus_post_step",
+        )
+        self.assertEqual(
+            initial_missing_terminal["mode"],
+            "initial_plus_post_step_plus_synthesized_terminal",
+        )
+        self.assertEqual(initial_missing_terminal["frame_rows"][0]["step"], "-1")
+        self.assertEqual(initial_missing_terminal["synthesized_rows"], metrics[-1:])
+
+        duplicated_terminal = align_video_telemetry(
+            metrics,
+            initial,
+            4,
+            frame_origin="post_step",
+        )
+        self.assertEqual(
+            duplicated_terminal["mode"],
+            "post_step_plus_encoded_terminal_duplicate",
+        )
+        self.assertEqual(duplicated_terminal["frame_rows"][-1], metrics[-1])
+
+        missing_terminal = align_video_telemetry(
+            metrics,
+            initial,
+            2,
+            frame_origin="post_step",
+        )
+        self.assertEqual(
+            missing_terminal["mode"], "post_step_plus_synthesized_terminal"
+        )
+        self.assertEqual(missing_terminal["frame_rows"], metrics[:-1])
+        self.assertEqual(missing_terminal["synthesized_rows"], metrics[-1:])
+
+        with self.assertRaises(RuntimeError):
+            align_video_telemetry(metrics[:-1], initial, 1)
+        with self.assertRaises(RuntimeError):
+            align_video_telemetry(metrics, initial, 1)
+
     def test_numbered_die_collision_matches_stock_dexcube_extent(self):
         asset = (
             Path(__file__).parents[1]

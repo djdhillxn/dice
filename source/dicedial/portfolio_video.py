@@ -157,6 +157,97 @@ def write_json(path, payload):
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def align_video_telemetry(
+    metrics,
+    initial_metrics,
+    decodable_frame_count,
+    frame_origin="legacy_auto",
+):
+    """Align capture telemetry to decoded frames without hiding real drift.
+
+    Gymnasium's MoviePy-backed recorder can omit the final encoded frame even
+    though the terminal environment step was recorded in telemetry.  That
+    boundary case is safe to repair by drawing the terminal HUD over a copy of
+    the last decodable frame.  Any larger discrepancy, or a missing
+    non-terminal row, remains a hard failure.
+    """
+
+    metric_count = len(metrics)
+    terminal_row = metrics[-1] if metric_count else None
+    try:
+        final_row_is_terminal = (
+            terminal_row is not None and int(float(terminal_row.get("done", 0))) == 1
+        )
+    except (AttributeError, TypeError, ValueError):
+        final_row_is_terminal = False
+
+    if (
+        frame_origin == "initial_plus_post_step"
+        and decodable_frame_count == metric_count + 1
+    ):
+        initial = {key: str(value) for key, value in initial_metrics.items()}
+        return {
+            "frame_rows": [initial, *metrics],
+            "synthesized_rows": [],
+            "mode": "initial_plus_post_step",
+        }
+    if (
+        frame_origin == "initial_plus_post_step"
+        and decodable_frame_count == metric_count
+        and final_row_is_terminal
+    ):
+        initial = {key: str(value) for key, value in initial_metrics.items()}
+        return {
+            "frame_rows": [initial, *metrics[:-1]],
+            "synthesized_rows": [terminal_row],
+            "mode": "initial_plus_post_step_plus_synthesized_terminal",
+        }
+    if (
+        decodable_frame_count == metric_count
+        and frame_origin != "initial_plus_post_step"
+    ):
+        return {
+            "frame_rows": list(metrics),
+            "synthesized_rows": [],
+            "mode": "post_step",
+        }
+    if decodable_frame_count == metric_count + 1 and frame_origin == "post_step":
+        if metric_count == 0:
+            raise RuntimeError("Cannot align a post-step video to empty telemetry")
+        return {
+            "frame_rows": [*metrics, metrics[-1]],
+            "synthesized_rows": [],
+            "mode": "post_step_plus_encoded_terminal_duplicate",
+        }
+    if decodable_frame_count == metric_count + 1 and frame_origin == "legacy_auto":
+        initial = {key: str(value) for key, value in initial_metrics.items()}
+        return {
+            "frame_rows": [initial, *metrics],
+            "synthesized_rows": [],
+            "mode": "initial_plus_post_step",
+        }
+    if (
+        decodable_frame_count == metric_count - 1
+        and frame_origin != "initial_plus_post_step"
+        and final_row_is_terminal
+    ):
+        return {
+            "frame_rows": list(metrics[:-1]),
+            "synthesized_rows": [terminal_row],
+            "mode": "post_step_plus_synthesized_terminal",
+        }
+
+    raise RuntimeError(
+        "Video/telemetry synchronization failed: "
+        f"video has {decodable_frame_count} decodable frames, metrics has "
+        f"{metric_count} rows (declared origin: {frame_origin}). Supported "
+        "mappings are exact post-step, one "
+        "explicit initial frame (when declared), one encoded terminal duplicate "
+        "for post-step capture, or one missing final frame when the unmatched "
+        "telemetry row is terminal."
+    )
+
+
 def _median(values):
     ordered = sorted(values)
     midpoint = len(ordered) // 2

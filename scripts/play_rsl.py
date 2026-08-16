@@ -238,7 +238,6 @@ def main():
     if not args.no_video:
         if raw_directory.exists() and any(raw_directory.iterdir()):
             raise FileExistsError(f"Raw video directory is not empty: {raw_directory}")
-        raw_directory.mkdir(parents=True, exist_ok=True)
 
     agent_cfg = make_runner_cfg(seed=args.seed, device=device)
     env_cfg = parse_env_cfg(
@@ -455,6 +454,9 @@ def main():
         "camera_definition": camera,
         "resolution": list(resolution),
         "raw_fps": args.fps,
+        # RecordVideo is started by the first step trigger, so every captured
+        # source frame represents a post-step state (there is no reset frame).
+        "recording_frame_origin": "post_step",
         "checkpoint": str(checkpoint_source),
         "checkpoint_loaded": str(checkpoint),
         "checkpoint_sha256": checkpoint_hash,

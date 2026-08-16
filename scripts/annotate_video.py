@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from dicedial.portfolio_video import align_video_telemetry
+
 
 STATUS_COLORS = {
     "rotating": (245, 176, 65, 255),
@@ -63,17 +65,13 @@ def _number(row, key, default=0.0):
     return float(value)
 
 
-def _align_rows(metrics, initial_metrics, frame_count):
-    if frame_count == len(metrics):
-        return metrics, "post_step"
-    if frame_count == len(metrics) + 1:
-        initial = {key: str(value) for key, value in initial_metrics.items()}
-        return [initial, *metrics], "initial_plus_post_step"
-    raise RuntimeError(
-        "Video/telemetry synchronization failed: "
-        f"video has {frame_count} frames, metrics has {len(metrics)} rows. "
-        "Only exact or one-initial-frame alignment is supported."
-    )
+def _count_decodable_frames(capture):
+    """Count frames the decoder can actually consume, not container metadata."""
+
+    frame_count = 0
+    while capture.grab():
+        frame_count += 1
+    return frame_count
 
 
 def _status_timeline(rows, raw_fps):
@@ -280,15 +278,33 @@ def annotate_video(
     summary = _read_json(summary_path)
     initial_metrics = _read_json(initial_metrics_path)
 
+    probe = cv2.VideoCapture(str(video_path))
+    if not probe.isOpened():
+        raise RuntimeError(f"Could not open video: {video_path}")
+    raw_fps = float(probe.get(cv2.CAP_PROP_FPS) or summary.get("raw_fps", 60))
+    width = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    advertised_frames = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
+    decodable_frames = _count_decodable_frames(probe)
+    probe.release()
+    if decodable_frames == 0:
+        raise RuntimeError("The input video contained no decodable frames")
+
+    alignment = align_video_telemetry(
+        metrics,
+        initial_metrics,
+        decodable_frames,
+        frame_origin=summary.get("recording_frame_origin", "legacy_auto"),
+    )
+    frame_rows = alignment["frame_rows"]
+    synthesized_rows = alignment["synthesized_rows"]
+    alignment_mode = alignment["mode"]
+    timeline_rows = [*frame_rows, *synthesized_rows]
+    statuses, completed_faces = _status_timeline(timeline_rows, raw_fps)
+
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
-        raise RuntimeError(f"Could not open video: {video_path}")
-    raw_fps = float(capture.get(cv2.CAP_PROP_FPS) or summary.get("raw_fps", 60))
-    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    aligned_rows, alignment_mode = _align_rows(metrics, initial_metrics, frame_count)
-    statuses, completed_faces = _status_timeline(aligned_rows, raw_fps)
+        raise RuntimeError(f"Could not reopen video: {video_path}")
 
     scale = height / 1080.0
     fonts = {
@@ -331,13 +347,19 @@ def annotate_video(
     ]
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     decoded_frames = 0
+    synthesized_terminal_frames = 0
+    last_source_frame = None
     last_frame = None
     try:
         while True:
             ok, frame = capture.read()
             if not ok:
                 break
-            row = aligned_rows[decoded_frames]
+            if decoded_frames >= len(frame_rows):
+                raise RuntimeError(
+                    "The decoder produced more frames than the validated telemetry mapping"
+                )
+            row = frame_rows[decoded_frames]
             annotated = _annotate_frame(
                 frame,
                 row,
@@ -348,15 +370,33 @@ def annotate_video(
                 fonts,
             )
             process.stdin.write(annotated.tobytes())
+            last_source_frame = frame
             last_frame = annotated
             decoded_frames += 1
 
-        if decoded_frames != frame_count:
+        if decoded_frames != decodable_frames:
             raise RuntimeError(
-                f"Decoded {decoded_frames} frames but metadata advertised {frame_count}"
+                f"Decoded {decoded_frames} frames after the validation pass found "
+                f"{decodable_frames}"
             )
-        if last_frame is None:
+        if last_frame is None or last_source_frame is None:
             raise RuntimeError("The input video contained no decodable frames")
+
+        for offset, row in enumerate(synthesized_rows):
+            timeline_index = decoded_frames + offset
+            annotated = _annotate_frame(
+                last_source_frame.copy(),
+                row,
+                statuses[timeline_index],
+                completed_faces[timeline_index],
+                condition_label,
+                style,
+                fonts,
+            )
+            process.stdin.write(annotated.tobytes())
+            last_frame = annotated
+            synthesized_terminal_frames += 1
+
         for _ in range(round(post_roll_seconds * raw_fps)):
             process.stdin.write(last_frame.tobytes())
     except Exception:
@@ -387,7 +427,11 @@ def annotate_video(
         "input_resolution": [width, height],
         "input_fps": raw_fps,
         "output_fps": output_fps,
+        "advertised_frames": advertised_frames,
+        "decodable_frames": decodable_frames,
         "decoded_frames": decoded_frames,
+        "synthesized_terminal_frames": synthesized_terminal_frames,
+        "telemetry_frames_encoded": decoded_frames + synthesized_terminal_frames,
         "post_roll_seconds": post_roll_seconds,
         "alignment_mode": alignment_mode,
         "crf": crf,
@@ -397,7 +441,12 @@ def annotate_video(
         json.dumps(annotation_summary, indent=2) + "\n", encoding="utf-8"
     )
     print(f"[DICE] Saved annotated video: {output_path}")
-    print(f"[DICE] Synchronization: {alignment_mode}, {decoded_frames} frames")
+    print(
+        "[DICE] Synchronization: "
+        f"{alignment_mode}, {decoded_frames} decoded + "
+        f"{synthesized_terminal_frames} synthesized terminal frames "
+        f"(container advertised {advertised_frames})"
+    )
     return annotation_summary
 
 

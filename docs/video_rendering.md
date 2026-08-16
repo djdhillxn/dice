@@ -238,9 +238,16 @@ instead of mixing stale MP4 files and new telemetry.
 - **Replay trace mismatch:** camera rendering changed or exposed
   nondeterministic dynamics. The script intentionally stops rather than
   combining different trajectories as if they were synchronized views.
-- **Video/telemetry mismatch:** inspect the raw capture and Gymnasium version.
-  The annotator supports an exact post-step mapping or one explicit initial
-  frame; other offsets are rejected.
+- **Video/telemetry mismatch:** the annotator counts actually decodable frames
+  instead of trusting MP4 container metadata. It supports an exact post-step
+  mapping, one explicitly declared initial frame, or one missing final frame
+  when (and only when) the unmatched telemetry row is terminal. In that last
+  MoviePy boundary case it repeats the final decoded image for one frame and
+  overlays the true terminal telemetry. Capture summaries declare whether the
+  recorder started from an initial or post-step frame, preventing an ambiguous
+  one-frame offset from silently shifting every HUD label. Larger offsets and
+  missing non-terminal frames remain hard failures; inspect the raw capture and
+  Gymnasium version.
 - **Missing `libx264`:** install the Ubuntu FFmpeg package and verify the
   encoder before rerunning.
 - **Missing final evaluation:** the quantitative result cards are deliberately
