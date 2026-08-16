@@ -4,6 +4,40 @@
 
 All workflows run **directly from the terminal using Python scripts**.
 
+## Final outcome
+
+The completed experiment trained for 5,000 PPO iterations (327.68 million
+transitions) and selected `model_4000.pt` by a five-checkpoint nominal sweep.
+The frozen policy was then evaluated for 1,000 episodes in each final
+condition:
+
+| Metric | Nominal | Symmetric physics variation | Heavy / low-friction stress |
+|---|---:|---:|---:|
+| Issued-command completion | 97.09% | 97.07% | 95.92% |
+| Episode drop rate | 9.70% | 9.50% | 45.30% |
+| Mean completed commands / episode | 33.334 | 33.072 | 23.514 |
+| Median completed commands / episode | 37 | 37 | 32 |
+| Commands / simulated minute | 90.536 | 89.000 | 81.996 |
+| Median command latency | 0.617 s | 0.617 s | 0.650 s |
+| Minimum per-face completion | 96.88% | 96.80% | 95.11% |
+| Deterministic action OOB rate | 20.77% | 20.77% | 20.91% |
+
+The moderate held-out physics distribution—object mass and material
+coefficients sampled within `[0.8, 1.2]` of nominal, with dynamic friction
+constrained not to exceed static friction—produced no statistically resolvable
+loss relative to nominal evaluation. The fixed adverse corner (`1.5x` mass and
+`0.7` object friction) preserved fast command completion but increased drops
+to 45.3%. This is a long-horizon retention failure: 424 of the 453 adverse
+drop episodes completed at least one command before dropping, and 219
+completed at least ten.
+
+`issued-command completion` is not a one-shot success probability. Every
+completed command counts as a successful attempt and the command active at
+episode termination counts as one unfinished attempt. It must therefore be
+read together with drop rate, command throughput, and latency. See
+[the full final report](docs/final_results.md) for provenance, uncertainty,
+failure decomposition, limitations, and the project-closure decision.
+
 ## Google Compute Engine / Conda setup
 
 The GCE workflow uses the existing Conda environment named **`dice`** and should be launched from an SSH terminal in **headless** mode.
@@ -105,8 +139,8 @@ python -c "import sqlite3; print('sqlite OK:', sqlite3.sqlite_version)"
 python -u scripts/train_rsl.py \
   --task DICE-Shadow-Train-v0 \
   --num_envs 2048 \
-  --max_iterations 10000 \
-  --run_name strong_run \
+  --max_iterations 5000 \
+  --run_name angular_bound_pilot_gurgaon \
   --headless
 ```
 
@@ -166,7 +200,7 @@ Forward port `6006` over SSH from your local machine and open `http://localhost:
 
 | Script | Purpose | CLI Command Example |
 |---|---|---|
-| `scripts/train_rsl.py` | Primary RSL-RL PPO training with live terminal progress bar & metrics | `python -u scripts/train_rsl.py --task DICE-Shadow-Train-v0 --num_envs 2048 --max_iterations 10000 --run_name strong_run --headless` |
+| `scripts/train_rsl.py` | Primary RSL-RL PPO training with live terminal progress bar & metrics | `python -u scripts/train_rsl.py --task DICE-Shadow-Train-v0 --num_envs 2048 --max_iterations 5000 --run_name angular_bound_pilot_gurgaon --headless` |
 | `scripts/run_training_preflight.sh` | Two-iteration actor/critic contract and PPO smoke test | `bash scripts/run_training_preflight.sh 64 2` |
 | `scripts/evaluate_rsl.py` | Single-condition nominal, robust, or adverse evaluation with progress and JSON/CSV outputs | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/<run>/model_4000.pt --episodes 1000` |
 | `scripts/run_checkpoint_sweep.py` | Discovers, nominally evaluates, and ranks every saved checkpoint except `model_0.pt` | `python -u scripts/run_checkpoint_sweep.py <timestamp>_<run_name>` |
@@ -261,8 +295,8 @@ created them.
 python scripts/train_rsl.py \
   --task DICE-Shadow-Train-v0 \
   --num_envs 2048 \
-  --max_iterations 10000 \
-  --run_name strong_run \
+  --max_iterations 5000 \
+  --run_name angular_bound_pilot_gurgaon \
   --headless
 ```
 

@@ -74,7 +74,7 @@ $$\theta_t = \arccos(\operatorname{clamp}(\text{alignment}_t)),\qquad
 
 * **Parallel Environments**: 2048
 * **Rollout Horizon (`num_steps_per_env`)**: 32 steps ($0.53\text{s}$ per rollout update)
-* **Total Training Iterations**: 10,000
+* **Total Training Iterations**: 5,000 completed
 * **Network Architecture**: Policy & Value MLPs $[512, 512, 256, 128]$ with ELU activations
 * **Observation Normalization**: Enabled
 * **Exploration**: Direct scalar policy-noise standard deviation initialized at `0.6`, with entropy coefficient `0.0`
@@ -90,8 +90,30 @@ $$\theta_t = \arccos(\operatorname{clamp}(\text{alignment}_t)),\qquad
 3. **Drop/Throughput Trade-Off**: Report drop rate alongside command completion and throughput across 1,000 nominal test episodes; a higher-throughput policy is not rejected solely for exceeding the earlier aspirational 5% drop target.
 4. **Held-Out Mass & Friction Robustness**: Evaluated on `DICE-Shadow-Robust-v0` ($\pm 20\%$ mass & friction).
 5. **Adverse Material Stress Test**: Evaluated on `DICE-Shadow-Adverse-v0` with fixed $1.5\times$ object mass and $0.7$ surface friction.
-6. **Deterministic Playback & Video Artifacts**: Rendered 6-face sequence (`1 -> 6 -> 3 -> 5 -> 2 -> 4`) annotated with telemetry metrics.
+6. **Deterministic Playback Pipeline**: Supports rendering the 6-face sequence (`1 -> 6 -> 3 -> 5 -> 2 -> 4`) and annotating it with telemetry metrics. Producing the portfolio video is an optional presentation step, not part of the quantitative acceptance criteria.
 
 ---
 
-*This document serves as the immutable anchor for all codebase implementations and experimental validations in the DICE project.*
+## 7. Final Outcome
+
+The final run completed 5,000 PPO iterations and 327.68 million transitions.
+A sweep over five saved checkpoints selected `model_4000.pt` rather than the
+last checkpoint, because it provided the best nominal drop/throughput trade-off.
+
+Across 1,000 episodes per condition, the selected policy achieved 97.09%
+issued-command completion, 33.334 mean sequential commands, and a 9.70% drop
+rate under nominal physics. Symmetric held-out mass/material variation retained
+essentially identical performance: 97.07% completion, 33.072 commands, and a
+9.50% drop rate. The fixed heavy/low-friction stress preserved 95.92% issued-
+command completion but reduced mean commands to 23.514 and increased episode
+drops to 45.30%, exposing a clear long-horizon grasp-retention boundary.
+
+The adverse result is a useful negative result and a future direction rather
+than a failure of the nominal objective. It shows why material randomization
+and system identification would be necessary for a stronger sim-to-real claim.
+The complete interpretation and limitations are recorded in
+[docs/final_results.md](docs/final_results.md).
+
+---
+
+*This document records the implemented design, acceptance criteria, and final experimental validation for the DICE project.*

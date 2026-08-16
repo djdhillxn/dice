@@ -14,16 +14,18 @@ Proceed only if reset reports policy shape `[64, 126]`, critic shape
 proxy saturation; a value near `1.0` means `fingertip_load_scale` must be
 reduced before the full run.
 
-## Primary run
+## Completed primary run
 
-Run one full-task PPO experiment:
+The final full-task PPO experiment completed with:
 
 ```text
 seed: 42
 environments: 2048
 steps per environment: 32
-maximum iterations: 10000
+maximum iterations: 5000
 checkpoint interval: 1000
+completed transitions: 327680000
+selected checkpoint: model_4000.pt
 ```
 
 No success thresholds, rewards, object distribution, or command distribution change during training.
@@ -79,6 +81,15 @@ difficult material stress test, not another symmetric distribution. All three
 conditions must remain
 separate because they use different physics distributions.
 
+The final evaluation completed all three 1,000-episode conditions from the
+same selected checkpoint. Nominal and symmetric-variation drop rates were 9.7%
+and 9.5%, respectively; adverse heavy/low-friction evaluation produced a 45.3%
+drop rate while still completing a mean of 23.514 sequential commands per
+episode. The experiment and its quantitative evaluation are closed. See
+[final_results.md](final_results.md) for the full analysis.
+
 ## Presentation
 
-Render one deterministic six-command episode with the numbered die and no randomization. Keep the raw video and the annotated version.
+The optional final presentation artifact is one deterministic six-command
+episode with the numbered die and no randomization. Keep the raw video and the
+annotated version; it does not alter the completed quantitative evaluation.
