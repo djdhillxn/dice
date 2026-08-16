@@ -6,8 +6,6 @@ import argparse
 import csv
 import importlib.metadata
 import importlib.util
-import json
-import math
 import shutil
 import subprocess
 import sys
@@ -26,6 +24,7 @@ from dicedial.portfolio_video import (
     compare_physics_snapshots,
     parse_resolution,
     parse_seed_spec,
+    probe_portfolio_video,
     read_json,
     read_metric_rows,
     select_representative_scout,
@@ -484,65 +483,6 @@ def _create_contact_sheet(images, labels, output):
         )
     canvas.save(output, quality=86)
     return output
-
-
-def _probe_video(ffprobe, path, expected_resolution, expected_fps):
-    result = subprocess.run(
-        [
-            ffprobe,
-            "-v",
-            "error",
-            "-show_streams",
-            "-show_format",
-            "-of",
-            "json",
-            str(path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(result.stdout)
-    video_streams = [
-        stream for stream in payload["streams"] if stream["codec_type"] == "video"
-    ]
-    audio_streams = [
-        stream for stream in payload["streams"] if stream["codec_type"] == "audio"
-    ]
-    if len(video_streams) != 1 or audio_streams:
-        raise ValueError(f"Expected one video and no audio streams: {path}")
-    stream = video_streams[0]
-    if stream["codec_name"] != "h264":
-        raise ValueError(f"Expected H.264, got {stream['codec_name']}: {path}")
-    if stream.get("pix_fmt") != "yuv420p":
-        raise ValueError(f"Expected yuv420p, got {stream.get('pix_fmt')}: {path}")
-    if (int(stream["width"]), int(stream["height"])) != tuple(expected_resolution):
-        raise ValueError(f"Unexpected resolution for {path}")
-    numerator, denominator = stream["avg_frame_rate"].split("/")
-    fps = float(numerator) / float(denominator)
-    if not math.isclose(fps, expected_fps, rel_tol=0.0, abs_tol=0.01):
-        raise ValueError(f"Expected {expected_fps} FPS, got {fps}: {path}")
-    size_bytes = Path(path).stat().st_size
-    if size_bytes > 50 * 1024 * 1024:
-        raise ValueError(f"Portfolio export exceeds 50 MiB: {path}")
-    with Path(path).open("rb") as stream:
-        atom_prefix = stream.read(min(size_bytes, 4 * 1024 * 1024))
-    moov_offset = atom_prefix.find(b"moov")
-    mdat_offset = atom_prefix.find(b"mdat")
-    faststart = moov_offset >= 0 and mdat_offset >= 0 and moov_offset < mdat_offset
-    if not faststart:
-        raise ValueError(f"MP4 metadata is not fast-start optimized: {path}")
-    return {
-        "path": str(path),
-        "codec": stream["codec_name"],
-        "pixel_format": stream.get("pix_fmt"),
-        "resolution": [int(stream["width"]), int(stream["height"])],
-        "fps": fps,
-        "duration_seconds": float(payload["format"]["duration"]),
-        "size_bytes": size_bytes,
-        "sha256": sha256_file(path),
-        "faststart": faststart,
-    }
 
 
 def _transcode_webm(ffmpeg, source, output):
@@ -1076,7 +1016,12 @@ def main():
         posters = []
         for video in export_videos:
             poster = video.with_name(video.stem + "_poster.webp")
-            probe = _probe_video(ffprobe, video, args.resolution_tuple, args.export_fps)
+            probe = probe_portfolio_video(
+                ffprobe,
+                video,
+                args.resolution_tuple,
+                args.export_fps,
+            )
             _extract_image(
                 ffmpeg,
                 video,
@@ -1117,7 +1062,12 @@ def main():
                 webm_outputs.append(webm)
 
         export_metadata = [
-            _probe_video(ffprobe, video, args.resolution_tuple, args.export_fps)
+            probe_portfolio_video(
+                ffprobe,
+                video,
+                args.resolution_tuple,
+                args.export_fps,
+            )
             for video in export_videos
         ]
         total_export_size_bytes = sum(item["size_bytes"] for item in export_metadata)

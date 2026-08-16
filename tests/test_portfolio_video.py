@@ -1,9 +1,12 @@
 """Unit tests for deterministic portfolio selection and validation helpers."""
 
 import csv
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from dicedial.portfolio_video import (
     PRESENTATION_COLLISION_EXTENT_M,
@@ -13,6 +16,7 @@ from dicedial.portfolio_video import (
     compare_physics_snapshots,
     parse_resolution,
     parse_seed_spec,
+    probe_portfolio_video,
     select_representative_scout,
 )
 
@@ -76,6 +80,48 @@ def _write_trace(path, alignment_offset=0.0, event_override=None):
 
 
 class TestPortfolioVideo(unittest.TestCase):
+    def test_probe_returns_video_metadata_after_faststart_file_check(self):
+        payload = {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "pix_fmt": "yuv420p",
+                    "width": 1920,
+                    "height": 1080,
+                    "avg_frame_rate": "30/1",
+                }
+            ],
+            "format": {"duration": "12.5"},
+        }
+        completed = subprocess.CompletedProcess(
+            args=["ffprobe"],
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video = Path(temporary_directory) / "portfolio.mp4"
+            video.write_bytes(b"ftyp" + b"moov" + b"metadata" + b"mdat" + b"video")
+            with patch(
+                "dicedial.portfolio_video.subprocess.run",
+                return_value=completed,
+            ) as run:
+                metadata = probe_portfolio_video(
+                    "ffprobe",
+                    video,
+                    (1920, 1080),
+                    30,
+                )
+
+        self.assertEqual(metadata["codec"], "h264")
+        self.assertEqual(metadata["pixel_format"], "yuv420p")
+        self.assertEqual(metadata["resolution"], [1920, 1080])
+        self.assertEqual(metadata["fps"], 30.0)
+        self.assertEqual(metadata["duration_seconds"], 12.5)
+        self.assertTrue(metadata["faststart"])
+        run.assert_called_once()
+
     def test_video_telemetry_alignment_accepts_only_safe_boundary_cases(self):
         metrics = [
             {"step": "0", "done": "0"},

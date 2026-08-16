@@ -6,6 +6,7 @@ import csv
 import hashlib
 import json
 import math
+import subprocess
 from pathlib import Path
 
 
@@ -104,6 +105,72 @@ def sha256_file(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def probe_portfolio_video(ffprobe, path, expected_resolution, expected_fps):
+    """Validate one browser-ready MP4 and return its publication metadata."""
+
+    path = Path(path)
+    result = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-show_streams",
+            "-show_format",
+            "-of",
+            "json",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    video_streams = [
+        item for item in payload["streams"] if item["codec_type"] == "video"
+    ]
+    audio_streams = [
+        item for item in payload["streams"] if item["codec_type"] == "audio"
+    ]
+    if len(video_streams) != 1 or audio_streams:
+        raise ValueError(f"Expected one video and no audio streams: {path}")
+
+    video_stream = video_streams[0]
+    if video_stream["codec_name"] != "h264":
+        raise ValueError(f"Expected H.264, got {video_stream['codec_name']}: {path}")
+    if video_stream.get("pix_fmt") != "yuv420p":
+        raise ValueError(f"Expected yuv420p, got {video_stream.get('pix_fmt')}: {path}")
+    resolution = (int(video_stream["width"]), int(video_stream["height"]))
+    if resolution != tuple(expected_resolution):
+        raise ValueError(f"Unexpected resolution for {path}")
+    numerator, denominator = video_stream["avg_frame_rate"].split("/")
+    fps = float(numerator) / float(denominator)
+    if not math.isclose(fps, expected_fps, rel_tol=0.0, abs_tol=0.01):
+        raise ValueError(f"Expected {expected_fps} FPS, got {fps}: {path}")
+
+    size_bytes = path.stat().st_size
+    if size_bytes > 50 * 1024 * 1024:
+        raise ValueError(f"Portfolio export exceeds 50 MiB: {path}")
+    with path.open("rb") as mp4_file:
+        atom_prefix = mp4_file.read(min(size_bytes, 4 * 1024 * 1024))
+    moov_offset = atom_prefix.find(b"moov")
+    mdat_offset = atom_prefix.find(b"mdat")
+    faststart = moov_offset >= 0 and mdat_offset >= 0 and moov_offset < mdat_offset
+    if not faststart:
+        raise ValueError(f"MP4 metadata is not fast-start optimized: {path}")
+
+    return {
+        "path": str(path),
+        "codec": video_stream["codec_name"],
+        "pixel_format": video_stream.get("pix_fmt"),
+        "resolution": list(resolution),
+        "fps": fps,
+        "duration_seconds": float(payload["format"]["duration"]),
+        "size_bytes": size_bytes,
+        "sha256": sha256_file(path),
+        "faststart": faststart,
+    }
 
 
 def parse_resolution(value):
