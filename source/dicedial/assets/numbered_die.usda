@@ -10,7 +10,7 @@ def Xform "Dice" (
 )
 {
     bool physics:rigidBodyEnabled = true
-    float physics:density = 567
+    float physics:mass = 0.216
 
     def Cube "Collision" (
         prepend apiSchemas = ["PhysicsCollisionAPI"]

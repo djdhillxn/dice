@@ -22,8 +22,10 @@ nominal, symmetric-variation, and adverse presentation variants mirror the
 corresponding material conditions without changing the learned policy.
 The physical collision cube is exactly 60 mm per side. Its 59 mm visual core,
 face panels, and pips have no collision API and do not contribute to dynamics.
-The rigid-body prim explicitly authors `PhysicsMassAPI` with the same
-567 kg/m³ density as the stock Shadow Hand configuration.
+The rigid-body prim explicitly authors `PhysicsMassAPI` with a mass of
+0.216 kg, matching the value measured from the stock evaluation object through
+the PhysX tensor API. An explicit mass is used because the stock USD's mass
+takes precedence over the inherited Shadow Hand density setting.
 
 ## Policy interface
 

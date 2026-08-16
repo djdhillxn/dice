@@ -27,6 +27,8 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab_tasks.direct.shadow_hand.shadow_hand_env_cfg import ShadowHandEnvCfg
 
+from dicedial.portfolio_video import PRESENTATION_MASS_KG
+
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _NUMBERED_DIE_USD = str(_PACKAGE_ROOT / "assets" / "numbered_die.usda")
@@ -47,7 +49,10 @@ def _numbered_die_spawn():
             stabilization_threshold=0.0025,
             max_depenetration_velocity=1000.0,
         ),
-        mass_props=sim_utils.MassPropertiesCfg(density=567.0),
+        # The stock DexCube resolves to 0.216 kg at runtime. Author the measured
+        # mass explicitly because its USD mass takes precedence over the
+        # inherited Shadow Hand density setting.
+        mass_props=sim_utils.MassPropertiesCfg(mass=PRESENTATION_MASS_KG),
         semantic_tags=[("class", "die")],
     )
 

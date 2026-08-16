@@ -14,6 +14,7 @@ DEFAULT_RESOLUTION = (1920, 1080)
 RAW_FPS = 60
 EXPORT_FPS = 30
 PRESENTATION_COLLISION_EXTENT_M = (0.060, 0.060, 0.060)
+PRESENTATION_MASS_KG = 0.216
 
 PORTFOLIO_CONDITIONS = {
     "nominal": {
@@ -264,18 +265,26 @@ def compare_physics_snapshots(
     """Require equivalent stock and numbered-die mass/inertia snapshots."""
 
     comparisons = {}
+    failures = []
     for field in ("mass", "inertia"):
         expected = reference.get(field)
         actual = presentation.get(field)
         if expected is None or actual is None:
-            raise ValueError(
+            failures.append(
                 f"Physics {field} is unavailable; the presentation audit "
                 "cannot establish equivalence"
             )
+            comparisons[field] = {"status": "unavailable"}
+            continue
         expected_values = [float(value) for value in expected]
         actual_values = [float(value) for value in actual]
         if len(expected_values) != len(actual_values):
-            raise ValueError(f"Physics {field} shape mismatch")
+            failures.append(
+                f"Physics {field} shape mismatch: stock={len(expected_values)}, "
+                f"numbered={len(actual_values)}"
+            )
+            comparisons[field] = {"status": "shape_mismatch"}
+            continue
         errors = []
         violations = []
         for expected_value, actual_value in zip(expected_values, actual_values):
@@ -298,13 +307,15 @@ def compare_physics_snapshots(
             "maximum_relative_error": maximum,
         }
         if any(violations):
-            raise ValueError(
+            failures.append(
                 f"Presentation die {field} differs from stock by {100.0 * maximum:.2f}% "
                 f"(relative limit {100.0 * relative_tolerance:.2f}%, "
                 f"absolute floor {absolute_tolerance:.3g}; "
                 f"stock={expected_values[maximum_index]:.9g}, "
                 f"numbered={actual_values[maximum_index]:.9g})"
             )
+    if failures:
+        raise ValueError("Physics audit failed:\n- " + "\n- ".join(failures))
     return {
         "relative_tolerance": relative_tolerance,
         "absolute_tolerance": absolute_tolerance,

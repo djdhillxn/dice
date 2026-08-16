@@ -7,6 +7,7 @@ from pathlib import Path
 
 from dicedial.portfolio_video import (
     PRESENTATION_COLLISION_EXTENT_M,
+    PRESENTATION_MASS_KG,
     compare_metric_traces,
     compare_physics_snapshots,
     parse_resolution,
@@ -83,8 +84,10 @@ class TestPortfolioVideo(unittest.TestCase):
             / "numbered_die.usda"
         ).read_text(encoding="utf-8")
         self.assertEqual(PRESENTATION_COLLISION_EXTENT_M, (0.060, 0.060, 0.060))
+        self.assertEqual(PRESENTATION_MASS_KG, 0.216)
         self.assertIn('"PhysicsMassAPI"', asset)
-        self.assertIn("float physics:density = 567", asset)
+        self.assertIn("float physics:mass = 0.216", asset)
+        self.assertNotIn("physics:density", asset)
         self.assertIn("double size = 0.060", asset)
         self.assertNotIn("double size = 0.065", asset)
         self.assertIn("double size = 0.059", asset)
@@ -169,6 +172,12 @@ class TestPortfolioVideo(unittest.TestCase):
             near_zero_matching,
         )
         self.assertEqual(result["comparisons"]["inertia"]["status"], "match")
+
+        with self.assertRaisesRegex(ValueError, "(?s)mass.*inertia"):
+            compare_physics_snapshots(
+                reference,
+                {"mass": [0.18], "inertia": [0.2, 0.3, 0.4]},
+            )
 
 
 if __name__ == "__main__":
