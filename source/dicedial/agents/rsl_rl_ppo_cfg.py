@@ -19,7 +19,7 @@ class DicePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 1_000
     experiment_name = "DICE"
     logger = "tensorboard"
-    clip_actions = 1.0
+    clip_actions = None
     obs_groups = {
         "policy": ["policy"],
         "critic": ["critic"],

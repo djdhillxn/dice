@@ -48,6 +48,7 @@ from dicedial.agents.rsl_rl_ppo_cfg import (
     compatible_checkpoint_path,
     make_runner_cfg,
 )
+from dicedial.training_artifacts import write_artifact_manifest
 
 
 def _numpy_tensor(extras, key, fallback, dtype=None):
@@ -326,6 +327,16 @@ def main():
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
     env.close()
+
+    # Evaluation normally lives under the checkpoint run. Refresh that run's
+    # transfer manifest so it does not silently omit post-training artifacts.
+    checkpoint_run_dir = checkpoint_source.parent
+    try:
+        output_dir.relative_to(checkpoint_run_dir)
+    except ValueError:
+        pass
+    else:
+        write_artifact_manifest(checkpoint_run_dir)
 
 
 if __name__ == "__main__":

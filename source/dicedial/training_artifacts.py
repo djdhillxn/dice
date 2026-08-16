@@ -113,7 +113,10 @@ def collect_runtime_logs(run_dir: Path, since_timestamp: float) -> dict:
     selected = []
     for path in candidates:
         try:
-            if path.is_file() and path.stat().st_mtime >= since_timestamp - 120.0:
+            # All candidates live on the same host clock as the training
+            # process. A lookback window can silently capture logs from a
+            # preflight or another run launched shortly beforehand.
+            if path.is_file() and path.stat().st_mtime >= since_timestamp:
                 selected.append(path)
         except OSError:
             continue

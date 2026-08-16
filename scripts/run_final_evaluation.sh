@@ -37,7 +37,10 @@ python - <<PY
 import json
 from pathlib import Path
 
+from dicedial.training_artifacts import write_artifact_manifest
+
 eval_dir = Path("${EVAL_DIR}")
+run_dir = Path("${RUN_DIR}")
 nominal = json.loads((eval_dir / "nominal" / "summary.json").read_text())
 robust = json.loads((eval_dir / "robust" / "summary.json").read_text())
 output = {
@@ -47,5 +50,6 @@ output = {
     "robust": robust,
 }
 (eval_dir / "final_summary.json").write_text(json.dumps(output, indent=2))
+write_artifact_manifest(run_dir)
 print(json.dumps(output, indent=2))
 PY

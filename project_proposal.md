@@ -51,19 +51,22 @@ features.
 
 ## 4. Reward Architecture & Anti-Hacking Formulation
 
-### 4.1 Potential-Based Progress Reward (Delta Alignment)
-To prevent the policy from getting trapped in local minima (loitering stationary at partial angles like $45^\circ$ for positive points), the static alignment reward is replaced with **Potential-Based Progress Shaping**:
-$$\mathcal{R}_{\text{progress}} = c_{\text{progress}} \times (\text{alignment}_t - \text{alignment}_{t-1})$$
-* **Loitering Penalty**: $\text{alignment}_t = \text{alignment}_{t-1} \implies \mathcal{R}_{\text{progress}} = 0$. Stationary loitering yields **zero points**.
-* **Target Switch Reset**: When a new target is assigned upon success, $\text{alignment}_{t-1}$ is updated to the new target's baseline alignment to prevent artificial negative delta spikes.
+### 4.1 Angular-Error Progress Reward
+To prevent the policy from getting trapped in local minima, the static alignment reward is replaced by progress in semantic angular error:
+$$\theta_t = \arccos(\operatorname{clamp}(\text{alignment}_t)),\qquad
+\mathcal{R}_{\text{progress}} = 40(\theta_{t-1}-\theta_t).$$
+* **Loitering Prevention**: $\theta_t = \theta_{t-1} \implies \mathcal{R}_{\text{progress}} = 0$. Stationary loitering yields **zero points**.
+* **Target Switch Reset**: When a new target is assigned upon success, the previous-error baseline is updated for the new command to prevent an artificial reward spike.
 
 ### 4.2 Continuous Hold Progress & Completion Incentives
 * **Signed Hold Progress Shaping**: $\mathcal{R}_{\text{hold}} = c_{\text{hold}} \times \frac{h_t-h_{t-1}}{20}$, which claws back accumulated shaping when a partial hold breaks.
-* **Success Completion Bonus**: $+250.0$ upon reaching step 20 of hold. Primary driver of return.
-* **Drop Penalty**: $-50.0$ if position error exceeds $0.24\text{m}$.
+* **Success Completion Bonus**: Raw $+250.0$ upon reaching step 20 of hold.
+* **Drop Penalty**: Raw $-100.0$ if position error exceeds $0.24\text{m}$.
 * **Position Error Penalty**: $-2.0 \times \|\mathbf{p}_{\text{die}} - \mathbf{p}_{\text{palm}}\|$.
-* **Applied-Target Rate Penalty**: $-0.01 \times \|\mathbf{u}_t-\mathbf{u}_{t-1}\|^2$, where $\mathbf{u}$ is the normalized smoothed joint-target state; there is no separate action-magnitude penalty.
+* **Applied-Target Rate Penalty**: $-0.01 \times \|\mathbf{u}_t-\mathbf{u}_{t-1}\|^2$, where $\mathbf{u}$ is the normalized smoothed joint-target state.
+* **Raw-Action Boundary Penalty**: $-0.1\sum_i\max(|a_i|-0.9,0)^2$. Raw policy outputs are retained for this term; only commands applied to the hand are clamped into $[-1,1]$.
 * **Settling Penalty**: A continuous orientation weight grows from zero at $45^\circ$ to one at $16^\circ$ and multiplies $-0.05\|\boldsymbol{\omega}_{\text{die}}\|^2$.
+* **Global Reward Scale**: The sum of all raw components is multiplied by $0.1$ before being returned to PPO; logged components use the same effective scale.
 
 ---
 

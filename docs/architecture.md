@@ -55,7 +55,10 @@ The five actor load features are bounded magnitudes derived from the force
 components of the fingertip incoming joint reaction wrenches. They are useful
 grasp-load proxies, but they are not dedicated net-contact sensors.
 
-The action space remains the 20-dimensional joint-target action.
+The action space remains the 20-dimensional joint-target action. RSL-RL's
+wrapper does not clip it: DICE retains the raw Gaussian policy output for the
+boundary penalty and diagnostics, clamps the applied command into `[-1, 1]`,
+and then passes that bounded command to the inherited smoothed controller.
 
 ## Command transition
 

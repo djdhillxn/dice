@@ -64,6 +64,11 @@ class DiceEnv(InHandManipulationEnv):
             dtype=torch.float,
             device=self.device,
         )
+        self.raw_actions = torch.zeros(
+            (self.num_envs, len(self.actuated_dof_indices)),
+            dtype=torch.float,
+            device=self.device,
+        )
         self.finger_bodies = sorted(
             self.hand.body_names.index(body_name)
             for body_name in cfg.fingertip_body_names
@@ -267,6 +272,13 @@ class DiceEnv(InHandManipulationEnv):
         self._startup_log(self.cfg, "Initial reset stage 4/4 complete.")
         return observations, self.extras
 
+    def _pre_physics_step(self, actions):
+        """Store raw policy outputs and apply clamped actions to joint targets."""
+
+        self.raw_actions = actions.clone()
+        applied_actions = actions.clamp(-1.0, 1.0)
+        super()._pre_physics_step(applied_actions)
+
     def compute_full_observations(self):
         """Return the frame-consistent actor observation tensor.
 
@@ -462,10 +474,19 @@ class DiceEnv(InHandManipulationEnv):
             current_top_face = None
         out_of_reach = position_error >= self.cfg.fall_dist
 
-        # Potential-based progress reward: rewards delta alignment toward target.
-        # Loitering statically yields 0 progress reward!
-        delta_alignment = alignment - self.last_alignment
-        progress_reward = self.cfg.alignment_scale * delta_alignment
+        # Angular-error reduction progress reward.
+        # Moving from 90 deg error to 16 deg yields ~52 raw reward points.
+        angle_error = torch.acos(alignment.clamp(-1.0 + 1.0e-6, 1.0 - 1.0e-6))
+        previous_angle_error = torch.acos(
+            self.last_alignment.clamp(-1.0 + 1.0e-6, 1.0 - 1.0e-6)
+        )
+        rotation_progress = previous_angle_error - angle_error
+        rotation_progress_scale = getattr(
+            self.cfg,
+            "rotation_progress_scale",
+            getattr(self.cfg, "alignment_scale", 40.0),
+        )
+        rotation_progress_reward = rotation_progress_scale * rotation_progress
 
         position_penalty = self.cfg.position_error_scale * position_error
 
@@ -492,9 +513,16 @@ class DiceEnv(InHandManipulationEnv):
         action_rate_penalty = action_rate_penalty_scale * torch.sum(
             applied_target_rate.square(), dim=-1
         )
-        drop_penalty = self.cfg.drop_penalty * out_of_reach.float()
-
         action_rate_rms = torch.sqrt(applied_target_rate.square().mean())
+
+        bound_excess = torch.relu(self.raw_actions.abs() - 0.9)
+        action_bound_penalty_scale = getattr(
+            self.cfg, "action_bound_penalty_scale", -0.1
+        )
+        action_bound_penalty = action_bound_penalty_scale * torch.sum(
+            bound_excess.square(), dim=-1
+        )
+        drop_penalty = self.cfg.drop_penalty * out_of_reach.float()
 
         joint_range = self.hand_dof_upper_limits - self.hand_dof_lower_limits
         near_lower = self.hand_dof_pos <= (
@@ -536,16 +564,31 @@ class DiceEnv(InHandManipulationEnv):
         success_reward = self.cfg.success_bonus * success.float()
         transition_type = self.command_transition_type.clone()
 
-        reward = (
-            progress_reward
+        raw_reward = (
+            rotation_progress_reward
             + hold_shaping
             + position_penalty
             + angular_penalty
             + action_penalty
             + action_rate_penalty
+            + action_bound_penalty
             + success_reward
             + drop_penalty
         )
+        reward_global_scale = getattr(self.cfg, "reward_global_scale", 0.1)
+        reward = reward_global_scale * raw_reward
+
+        # Scale individual component terms by reward_global_scale so logged
+        # scalar components sum exactly to DICE/reward_total.
+        rotation_progress_reward = reward_global_scale * rotation_progress_reward
+        hold_shaping = reward_global_scale * hold_shaping
+        position_penalty = reward_global_scale * position_penalty
+        angular_penalty = reward_global_scale * angular_penalty
+        action_penalty = reward_global_scale * action_penalty
+        action_rate_penalty = reward_global_scale * action_rate_penalty
+        action_bound_penalty = reward_global_scale * action_bound_penalty
+        success_reward = reward_global_scale * success_reward
+        drop_penalty = reward_global_scale * drop_penalty
 
         self.last_alignment.copy_(alignment)
         self.last_position_error.copy_(position_error)
@@ -655,15 +698,23 @@ class DiceEnv(InHandManipulationEnv):
         log["DICE/hold_ge_5_rate"] = (self.hold_counter >= 5).float().mean()
         log["DICE/hold_ge_10_rate"] = (self.hold_counter >= 10).float().mean()
         log["DICE/hold_ge_19_rate"] = (self.hold_counter >= 19).float().mean()
-        log["DICE/reward_alignment_progress"] = progress_reward.mean()
+        log["DICE/angular_error_degrees"] = torch.rad2deg(angle_error).mean()
+        log["DICE/reward_rotation_progress"] = rotation_progress_reward.mean()
+        log["DICE/reward_alignment_progress"] = rotation_progress_reward.mean()
         log["DICE/reward_hold_shaping"] = hold_shaping.mean()
         log["DICE/reward_position"] = position_penalty.mean()
         log["DICE/reward_angular"] = angular_penalty.mean()
         log["DICE/reward_action"] = action_penalty.mean()
         log["DICE/reward_action_rate"] = action_rate_penalty.mean()
+        log["DICE/reward_action_bound"] = action_bound_penalty.mean()
         log["DICE/reward_success"] = success_reward.mean()
         log["DICE/reward_drop"] = drop_penalty.mean()
         log["DICE/reward_total"] = reward.mean()
+        log["DICE/raw_action_mean_abs"] = self.raw_actions.abs().mean()
+        log["DICE/raw_action_rms"] = torch.sqrt(self.raw_actions.square().mean())
+        log["DICE/raw_action_out_of_bounds_rate"] = (
+            (self.raw_actions.abs() > 1.0).float().mean()
+        )
         log["DICE/action_mean_abs"] = self.actions.abs().mean()
         log["DICE/action_rms"] = torch.sqrt(self.actions.square().mean())
         log["DICE/action_rate_rms"] = action_rate_rms
@@ -738,6 +789,7 @@ class DiceEnv(InHandManipulationEnv):
 
         self.hold_counter[env_ids] = 0
         self.command_age_steps[env_ids] = 0
+        self.raw_actions[env_ids] = 0.0
         self.previous_applied_targets[env_ids] = self._compute_normalized_cur_targets(
             env_ids
         )

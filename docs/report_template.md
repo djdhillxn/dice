@@ -21,6 +21,9 @@
 - desired KL: inactive under fixed schedule
 - epochs / minibatches: 5 / 4
 - gamma / lambda: 0.99 / 0.95
+- raw/applied action boundary: unbounded Gaussian / environment clamp to [-1, 1]
+- raw-action boundary penalty: -0.1 beyond |a| = 0.9, squared
+- global reward scale: 0.1
 
 ## Final task definition
 

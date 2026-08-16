@@ -113,10 +113,10 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
     success_angular_speed = 1.25
     hold_steps = 20
 
-    # Progress-based reward shaping.
-    # alignment_scale multiplies step-to-step delta alignment (progress toward target).
-    # Static loitering gets ZERO progress reward.
-    alignment_scale = 10.0
+    # Rotation-progress reward shaping: multiplies angular-error reduction (radians).
+    # Moving from 90 deg error to 16 deg yields ~52 raw reward points.
+    rotation_progress_scale = 40.0
+    alignment_scale = 40.0
     # Reward signed changes in the consecutive hold counter. A valid hold step
     # earns +2.0, while breaking a k-step partial hold claws back that progress.
     hold_progress_scale = 40.0
@@ -126,8 +126,10 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
     angular_penalty_gate_deg = 45.0
     action_penalty_scale = 0.0
     action_rate_penalty_scale = -0.01
+    action_bound_penalty_scale = -0.1
     success_bonus = 250.0
-    drop_penalty = -50.0
+    drop_penalty = -100.0
+    reward_global_scale = 0.1
 
     # Converts the fingertip reaction-force norm into a bounded [0, 1] actor
     # load proxy. The training log records its mean and saturation fraction so

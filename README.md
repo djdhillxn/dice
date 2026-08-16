@@ -178,23 +178,29 @@ Forward port `6006` over SSH from your local machine and open `http://localhost:
 ## 2. Theoretical Analysis & Reward Design
 
 ### Why Static Alignment Fails (The "Loitering" Problem)
-In naive setups, policies receive a static posture reward proportional to how close the requested face is to pointing upward. For example, if a die is held at 45 degrees, the static alignment reward gives a constant positive signal every control step. Over a 24-second episode (1,440 steps), sitting stationary at 45 degrees yields **hundreds of reward points** for doing nothing! If the policy tries to flip the die further, it risks dropping it (-50 penalty). Consequently, the policy falls into a **local minimum of loitering indefinitely** without ever attempting to complete commands.
+In naive setups, policies receive a static posture reward proportional to how close the requested face is to pointing upward. For example, if a die is held at 45 degrees, the static alignment reward gives a constant positive signal every control step. Over a 24-second episode (1,440 steps), sitting stationary at 45 degrees yields **hundreds of reward points** for doing nothing. If the policy tries to flip the die further, it risks dropping it. Consequently, the policy can fall into a **local minimum of loitering indefinitely** without ever attempting to complete commands.
 
 ### Solutions Implemented
 
-1. **Potential-Based Progress Reward (Delta Alignment)**:
-   $$\text{Reward}_{\text{progress}} = c_{\text{progress}} \cdot (\text{alignment}_t - \text{alignment}_{t-1})$$
-   - Staying stationary ($\text{alignment}_t = \text{alignment}_{t-1}$) yields **zero** progress reward. Loitering is completely unrewarded.
-   - Rotating *toward* the target face yields positive progress reward.
-   - Rotating *away* yields negative reward.
+1. **Angular-Error Progress Reward**:
+   $$\theta_t = \arccos(\operatorname{clamp}(\text{alignment}_t)),\qquad
+   \text{Reward}_{\text{progress}} = 40(\theta_{t-1}-\theta_t)$$
+   - Staying stationary yields **zero** progress reward.
+   - Angular progress has a consistent scale across difficult and near-target orientations.
+   - Rotating *toward* the target face yields positive reward; rotating *away* yields negative reward.
 
 2. **Signed Hold Progress Shaping**:
    - Rewards each new valid hold step and claws the accumulated shaping back if the consecutive hold breaks:
      $$\text{Reward}_{\text{hold}} = c_{\text{hold}} \cdot \frac{h_t-h_{t-1}}{\text{hold\_steps}}$$
    - A partial hold cannot be repeatedly farmed for positive return.
 
-3. **Command Completion Bonus (`+250`)**:
-   - Because loitering earns zero points, completing commands to receive the `+250` success bonus is the **primary driver** of total episode return.
+3. **Command Completion and Drop Terms**:
+   - Command completion earns a raw `+250`; dropping incurs a raw `-100`.
+   - A global reward scale of `0.1` makes their effective PPO rewards `+25` and `-10` while preserving the intended relative incentives.
+
+4. **Raw-Action Boundary Penalty**:
+   - The environment stores the unbounded Gaussian policy output, clamps only the command applied to the hand, and penalizes squared excess beyond `|a| = 0.9`.
+   - This gives PPO a learning signal against action-clipping aliasing while preserving bounded physical joint targets.
 
 ---
 
@@ -211,7 +217,7 @@ In naive setups, policies receive a static posture reward proportional to how cl
 
 ## 4. Actor and Critic Observations
 
-The action space is Isaac Lab's 20-dimensional continuous Shadow Hand joint targets.
+The action space is a 20-dimensional continuous Shadow Hand joint target command. The Gaussian policy output is retained for PPO and boundary-penalty accounting, while the environment clamps the command applied to the hand into `[-1, 1]`.
 
 The policy receives a **126-dimensional task-aligned** observation space:
 
@@ -240,6 +246,7 @@ created them.
 - **Rollout Length**: `num_steps_per_env = 32` (65,536 transitions per update with 2,048 environments).
 - **Optimizer**: Adam with a fixed `3e-4` learning rate.
 - **Exploration**: Direct scalar standard deviation initialized at `0.6`, with no entropy bonus.
+- **Action application**: RSL-RL wrapper clipping is disabled; `DiceEnv` records raw actions and clamps only the applied controller command.
 - **Networks**: Separate actor and critic MLPs with `[512, 512, 256, 128]`, ELU activations, and observation normalization.
 - **Discount & GAE**: `gamma = 0.99`, `lambda = 0.95`.
 
