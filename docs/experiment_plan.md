@@ -34,12 +34,27 @@ The run already produces regular checkpoints. Use nominal frozen-policy evaluati
 
 Rank candidate checkpoints by:
 
-1. mean completed commands per episode
+1. whether command completion meets the 90% acceptance threshold
 2. drop rate
-3. minimum per-face success rate
-4. median successful-command latency
+3. mean completed commands per episode
+4. minimum per-face success rate
+5. median successful-command latency
+6. deterministic action out-of-bounds rate
 
 Training reward is diagnostic, not the final selection metric.
+
+Run the nominal checkpoint sweep with:
+
+```bash
+python -u scripts/run_checkpoint_sweep.py <timestamp>_<run_name>
+```
+
+The sweep excludes initialization-only `model_0.pt`, evaluates periodic
+checkpoints plus `model_final.pt` sequentially, and writes isolated summaries
+and a ranking under `evaluation/checkpoint_sweep/`. The automated ranking first
+separates checkpoints that meet the 90% command-success threshold, then applies
+drop rate, mean commands, minimum per-face success, latency, and action-bound
+rate as ordered tie-breakers.
 
 ## Final reporting
 

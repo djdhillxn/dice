@@ -169,6 +169,7 @@ Forward port `6006` over SSH from your local machine and open `http://localhost:
 | `scripts/train_rsl.py` | Primary RSL-RL PPO training with live terminal progress bar & metrics | `python -u scripts/train_rsl.py --task DICE-Shadow-Train-v0 --num_envs 2048 --max_iterations 10000 --run_name strong_run --headless` |
 | `scripts/run_training_preflight.sh` | Two-iteration actor/critic contract and PPO smoke test | `bash scripts/run_training_preflight.sh 64 2` |
 | `scripts/evaluate_rsl.py` | Nominal or robust evaluation with progress bar & JSON/CSV outputs inside the checkpoint run | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/<run>/model_final.pt --episodes 500` |
+| `scripts/run_checkpoint_sweep.py` | Discovers, nominally evaluates, and ranks every saved checkpoint except `model_0.pt` | `python -u scripts/run_checkpoint_sweep.py <timestamp>_<run_name>` |
 | `scripts/run_final_evaluation.sh` | Runs both nominal and robust evaluations under the checkpoint run and generates `final_summary.json` | `bash scripts/run_final_evaluation.sh outputs/<run>/model_final.pt 500 256` |
 | `scripts/play_rsl.py` | Renders continuous 6-face sequence (`1 -> 6 -> 3 -> 5 -> 2 -> 4`) | `python scripts/play_rsl.py --task DICE-Shadow-Play-v0 --checkpoint outputs/<run>/model_final.pt --output videos/DICE` |
 | `scripts/annotate_video.py` | Overlays live telemetry metrics (target, top face, alignment, hold) onto rendered MP4 | `python scripts/annotate_video.py --video videos/DICE/raw/DICE.mp4 --metrics videos/DICE/video_metrics.csv --output videos/DICE/annotated.mp4` |
@@ -268,6 +269,22 @@ python scripts/train_rsl.py \
 ```bash
 bash scripts/run_final_evaluation.sh outputs/<timestamp>_strong_run/model_final.pt 500 256
 ```
+
+### Checkpoint Sweep
+
+Evaluate every periodic checkpoint plus `model_final.pt` sequentially, keep each
+checkpoint's artifacts separate, and rank them by the documented acceptance
+criteria:
+
+```bash
+python -u scripts/run_checkpoint_sweep.py <timestamp>_<run_name>
+```
+
+The command accepts either the run ID below `outputs/` or a direct run-directory
+path. Completed matching evaluations are reused after an interruption; pass
+`--force` to rerun them. Results are written to
+`outputs/<run>/evaluation/checkpoint_sweep/`, including `ranking.json`,
+`ranking.csv`, `ranking.txt`, and `selected_checkpoint.txt`.
 
 ### Rendering Video
 ```bash

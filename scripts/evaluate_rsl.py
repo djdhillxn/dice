@@ -271,6 +271,7 @@ def main():
         "task": args.task,
         "checkpoint": str(checkpoint),
         "seed": args.seed,
+        "num_envs": num_envs,
         "episodes": int(len(frame)),
         "successful_commands": int(total_successes),
         "attempted_commands": attempted_commands,
