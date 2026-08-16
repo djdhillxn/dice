@@ -35,25 +35,34 @@
 
 ## Evaluation
 
-| Metric | Nominal | Robust |
-|---|---:|---:|
-| Episodes | | |
-| Command success rate | | |
-| Drop rate | | |
-| Mean commands per episode | | |
-| Median commands per episode | | |
-| Median command latency | | |
+| Metric | Nominal | Symmetric robust | Adverse material |
+|---|---:|---:|---:|
+| Episodes | | | |
+| Command success rate | | | |
+| Drop rate | | | |
+| Mean commands per episode | | | |
+| Median commands per episode | | | |
+| Commands per simulated minute | | | |
+| Median command latency | | | |
+| Deterministic action OOB rate | | | |
 
 ## Per-face success
 
-| Face | Nominal | Robust |
-|---|---:|---:|
-| 1 | | |
-| 2 | | |
-| 3 | | |
-| 4 | | |
-| 5 | | |
-| 6 | | |
+| Face | Nominal | Symmetric robust | Adverse material |
+|---|---:|---:|---:|
+| 1 | | | |
+| 2 | | | |
+| 3 | | | |
+| 4 | | | |
+| 5 | | | |
+| 6 | | | |
+
+Physics conditions:
+
+- nominal: no evaluation events
+- symmetric robust: object mass/friction samples in `[0.8, 1.2]`, constrained
+  so dynamic friction does not exceed static friction
+- adverse material: fixed `1.5x` object mass and `0.7` static/dynamic friction
 
 ## Qualitative result
 

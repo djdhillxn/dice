@@ -146,7 +146,7 @@ The directory contains:
 - `model_*.pt`: periodic RSL-RL checkpoints (`save_interval = 1000` by default; override with `--save_interval`).
 - `model_final.pt`: explicit final/interrupted checkpoint from the DICE launcher.
 - `git/*.diff`: repository state captured by RSL-RL on the first learning iteration, including DICE after the runner registers this repository.
-- `evaluation/`: nominal and robust frozen-policy results produced by the evaluation scripts.
+- `evaluation/`: checkpoint selection plus nominal, symmetric-robust, and adverse frozen-policy results.
 
 RSL-RL logs PPO losses, learning rate, policy noise, FPS/collection/learning time, reward, episode length, and every scalar under `extras["log"]`. DICE additionally records actor-mean action bounds, alignment, position and angular speed, all three success-gate rates, simultaneous-gate rate, hold-counter tails, command/drop statistics, every reward component, action magnitude/RMS, and action saturation.
 
@@ -168,10 +168,10 @@ Forward port `6006` over SSH from your local machine and open `http://localhost:
 |---|---|---|
 | `scripts/train_rsl.py` | Primary RSL-RL PPO training with live terminal progress bar & metrics | `python -u scripts/train_rsl.py --task DICE-Shadow-Train-v0 --num_envs 2048 --max_iterations 10000 --run_name strong_run --headless` |
 | `scripts/run_training_preflight.sh` | Two-iteration actor/critic contract and PPO smoke test | `bash scripts/run_training_preflight.sh 64 2` |
-| `scripts/evaluate_rsl.py` | Nominal or robust evaluation with progress bar & JSON/CSV outputs inside the checkpoint run | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/<run>/model_final.pt --episodes 500` |
+| `scripts/evaluate_rsl.py` | Single-condition nominal, robust, or adverse evaluation with progress and JSON/CSV outputs | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/<run>/model_4000.pt --episodes 1000` |
 | `scripts/run_checkpoint_sweep.py` | Discovers, nominally evaluates, and ranks every saved checkpoint except `model_0.pt` | `python -u scripts/run_checkpoint_sweep.py <timestamp>_<run_name>` |
-| `scripts/run_final_evaluation.sh` | Runs both nominal and robust evaluations under the checkpoint run and generates `final_summary.json` | `bash scripts/run_final_evaluation.sh outputs/<run>/model_final.pt 500 256` |
-| `scripts/play_rsl.py` | Renders continuous 6-face sequence (`1 -> 6 -> 3 -> 5 -> 2 -> 4`) | `python scripts/play_rsl.py --task DICE-Shadow-Play-v0 --checkpoint outputs/<run>/model_final.pt --output videos/DICE` |
+| `scripts/run_final_evaluation.sh` | Runs the three final conditions, supports interruption-safe reuse, and writes combined JSON/CSV/text results | `bash scripts/run_final_evaluation.sh outputs/<run>/model_4000.pt` |
+| `scripts/play_rsl.py` | Renders continuous 6-face sequence (`1 -> 6 -> 3 -> 5 -> 2 -> 4`) | `python scripts/play_rsl.py --task DICE-Shadow-Play-v0 --checkpoint outputs/<run>/model_4000.pt --output videos/DICE` |
 | `scripts/annotate_video.py` | Overlays live telemetry metrics (target, top face, alignment, hold) onto rendered MP4 | `python scripts/annotate_video.py --video videos/DICE/raw/DICE.mp4 --metrics videos/DICE/video_metrics.csv --output videos/DICE/annotated.mp4` |
 
 ---
@@ -211,7 +211,8 @@ In naive setups, policies receive a static posture reward proportional to how cl
 |---|---|---|---|
 | `DICE-Shadow-Train-v0` | Main PPO training | stock instanceable DexCube | none |
 | `DICE-Shadow-Eval-v0` | Nominal evaluation | stock instanceable DexCube | none |
-| `DICE-Shadow-Robust-v0` | Held-out robustness evaluation | stock instanceable DexCube | mass and friction ±20% |
+| `DICE-Shadow-Robust-v0` | Symmetric held-out robustness evaluation | stock instanceable DexCube | mass and physically consistent friction ±20% |
+| `DICE-Shadow-Adverse-v0` | Adverse material stress evaluation | stock instanceable DexCube | fixed 1.5x mass and 0.7 friction |
 | `DICE-Shadow-Play-v0` | Six-command video | local numbered die | none |
 
 ---
@@ -267,8 +268,23 @@ python scripts/train_rsl.py \
 
 ### Evaluation
 ```bash
-bash scripts/run_final_evaluation.sh outputs/<timestamp>_strong_run/model_final.pt 500 256
+bash scripts/run_final_evaluation.sh \
+  outputs/<timestamp>_strong_run/model_4000.pt \
+  1000 \
+  256
 ```
+
+The shell wrapper evaluates nominal physics with seed `2026`, symmetric held-out
+mass/friction with seed `2027`, and the fixed heavy/slippery stress condition
+with seed `2028`. Its stable default output is
+`evaluation/final_<checkpoint-stem>/`; matching completed 1,000-episode
+conditions are reused after an interruption. Pass `--force` as the fifth
+argument (or in place of the output-directory argument) to rerun every
+condition. Existing 500-episode summaries fail the reuse contract and are
+overwritten in place, so no manual cleanup or extra timestamp directory is
+needed. The directory contains per-condition CSV and JSON files plus
+`evaluation_run.json`, `final_summary.json`, `final_comparison.csv`, and
+`final_comparison.txt`.
 
 ### Checkpoint Sweep
 
@@ -290,7 +306,7 @@ path. Completed matching evaluations are reused after an interruption; pass
 ```bash
 python scripts/play_rsl.py \
   --task DICE-Shadow-Play-v0 \
-  --checkpoint outputs/<timestamp>_strong_run/model_final.pt \
+  --checkpoint outputs/<timestamp>_strong_run/model_4000.pt \
   --output videos/DICE
 ```
 

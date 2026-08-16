@@ -10,6 +10,11 @@ The custom environment adds only semantic face commands, yaw-invariant face alig
 
 Training, nominal evaluation, and robust evaluation use Isaac Lab's stock instanceable DexCube. This is the performance-sensitive and known-good object path.
 
+The final adverse evaluation uses that same object and policy interface, but
+fixes the object's mass at 1.5 times nominal and its static/dynamic friction at
+0.7. This isolates a heavy, slippery material shift without changing geometry,
+observations, commands, or success criteria.
+
 The single-environment play configuration replaces it with the local numbered die. Its collision size and density are aligned with the stock cube configuration, but its visible pips are used only for the final video.
 
 ## Policy interface
@@ -74,6 +79,7 @@ train_rsl.py
   .pt checkpoints
 
                     ┌─ evaluate_rsl.py → nominal metrics
-.pt checkpoint ─────┼─ evaluate_rsl.py → robust metrics
+.pt checkpoint ─────┼─ evaluate_rsl.py → symmetric robust metrics
+                    ├─ evaluate_rsl.py → adverse material metrics
                     └─ play_rsl.py     → raw MP4 + overlay CSV
 ```

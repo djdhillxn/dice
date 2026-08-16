@@ -7,6 +7,7 @@ _REGISTRATIONS = {
     "DICE-Shadow-Train-v0": "dicedial.tasks.dice_dial_env_cfg:DiceTrainEnvCfg",
     "DICE-Shadow-Eval-v0": "dicedial.tasks.dice_dial_env_cfg:DiceEvalEnvCfg",
     "DICE-Shadow-Robust-v0": "dicedial.tasks.dice_dial_env_cfg:DiceRobustEnvCfg",
+    "DICE-Shadow-Adverse-v0": "dicedial.tasks.dice_dial_env_cfg:DiceAdverseEnvCfg",
     "DICE-Shadow-Play-v0": "dicedial.tasks.dice_dial_env_cfg:DicePlayEnvCfg",
 }
 

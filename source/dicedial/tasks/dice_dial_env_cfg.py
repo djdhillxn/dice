@@ -6,6 +6,7 @@ iteration zero.  The environments differ only in their runtime purpose:
 * ``DICE-Shadow-Train-v0``: stock instanceable DexCube, no domain randomization.
 * ``DICE-Shadow-Eval-v0``: nominal frozen-policy evaluation, no randomization.
 * ``DICE-Shadow-Robust-v0``: held-out object mass and friction randomization.
+* ``DICE-Shadow-Adverse-v0``: fixed heavy, low-friction material stress test.
 * ``DICE-Shadow-Play-v0``: one numbered die, deterministic command sequence,
   no randomization, and a presentation camera.
 """
@@ -61,6 +62,7 @@ class DiceRobustObjectEventsCfg:
             "dynamic_friction_range": (0.8, 1.2),
             "restitution_range": (0.0, 0.0),
             "num_buckets": 64,
+            "make_consistent": True,
         },
     )
 
@@ -71,6 +73,44 @@ class DiceRobustObjectEventsCfg:
         params={
             "asset_cfg": SceneEntityCfg("object"),
             "mass_distribution_params": (0.8, 1.2),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+
+
+@configclass
+class DiceAdverseObjectEventsCfg:
+    """Fixed heavy/slippery object properties for the final stress test.
+
+    This is deliberately an adverse corner rather than another symmetric
+    distribution: the object is 1.5x its nominal mass and both surface-friction
+    coefficients are fixed at 0.7. Keeping the condition fixed makes failures
+    directly attributable to the material shift instead of to a lucky mixture
+    of easier and harder samples.
+    """
+
+    object_physics_material = EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="reset",
+        min_step_count_between_reset=1,
+        params={
+            "asset_cfg": SceneEntityCfg("object"),
+            "static_friction_range": (0.7, 0.7),
+            "dynamic_friction_range": (0.7, 0.7),
+            "restitution_range": (0.0, 0.0),
+            "num_buckets": 1,
+            "make_consistent": True,
+        },
+    )
+
+    object_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="reset",
+        min_step_count_between_reset=1,
+        params={
+            "asset_cfg": SceneEntityCfg("object"),
+            "mass_distribution_params": (1.5, 1.5),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -183,6 +223,13 @@ class DiceRobustEnvCfg(DiceEvalEnvCfg):
     """Held-out evaluation with ±20% object mass/friction variation."""
 
     events = DiceRobustObjectEventsCfg()
+
+
+@configclass
+class DiceAdverseEnvCfg(DiceEvalEnvCfg):
+    """Held-out evaluation at a fixed heavy, low-friction adverse corner."""
+
+    events = DiceAdverseObjectEventsCfg()
 
 
 @configclass

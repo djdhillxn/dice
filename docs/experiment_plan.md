@@ -60,15 +60,24 @@ rate as ordered tie-breakers.
 
 For the selected checkpoint, report:
 
-- 500 nominal episodes
-- 500 held-out robustness episodes
+- 1,000 nominal episodes (`seed = 2026`)
+- 1,000 symmetric held-out mass/friction episodes (`seed = 2027`)
+- 1,000 fixed adverse-material episodes (`seed = 2028`)
 - command success rate
 - drop rate
 - mean and median completed commands per episode
+- completed commands per simulated minute
 - median time to successful command
+- deterministic action out-of-bounds rate
 - six per-face success rates
 
-The robustness numbers must remain separate from nominal performance because the environments use different physics distributions.
+The symmetric robustness condition samples object mass and the two friction
+coefficients within 0.8 to 1.2 times nominal, then constrains dynamic friction
+to be no greater than static friction. The adverse condition fixes mass at 1.5
+times nominal and both friction coefficients at 0.7. It is a deliberately
+difficult material stress test, not another symmetric distribution. All three
+conditions must remain
+separate because they use different physics distributions.
 
 ## Presentation
 

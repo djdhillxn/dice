@@ -1,55 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 CHECKPOINT [EPISODES] [NUM_ENVS] [OUTPUT_DIR]"
+if [[ $# -lt 1 || $# -gt 5 ]]; then
+  echo "Usage: $0 CHECKPOINT [EPISODES] [NUM_ENVS] [OUTPUT_DIR] [--force]"
   exit 1
 fi
 
-CHECKPOINT="$1"
-EPISODES="${2:-500}"
+CHECKPOINT=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+EPISODES="${2:-1000}"
 NUM_ENVS="${3:-256}"
-TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
-RUN_DIR=$(cd "$(dirname "$CHECKPOINT")" && pwd)
-EVAL_DIR="${4:-${RUN_DIR}/evaluation/${TIMESTAMP}}"
+OUTPUT_DIR="${4:-}"
+FORCE="${5:-}"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 
-echo "[DICE] Running evaluation output to: ${EVAL_DIR}"
+if [[ "${OUTPUT_DIR}" == "--force" && -z "${FORCE}" ]]; then
+  FORCE="--force"
+  OUTPUT_DIR=""
+fi
+if [[ -n "${FORCE}" && "${FORCE}" != "--force" ]]; then
+  echo "The fifth argument must be --force when provided."
+  exit 1
+fi
 
-python scripts/evaluate_rsl.py \
-  --task DICE-Shadow-Eval-v0 \
-  --checkpoint "$CHECKPOINT" \
-  --episodes "$EPISODES" \
-  --num_envs "$NUM_ENVS" \
-  --seed 2026 \
-  --headless \
-  --output "${EVAL_DIR}/nominal"
+cd "${REPO_ROOT}"
 
-python scripts/evaluate_rsl.py \
-  --task DICE-Shadow-Robust-v0 \
-  --checkpoint "$CHECKPOINT" \
-  --episodes "$EPISODES" \
-  --num_envs "$NUM_ENVS" \
-  --seed 2027 \
-  --headless \
-  --output "${EVAL_DIR}/robust"
+COMMAND=(
+  python -u scripts/run_final_evaluation.py "${CHECKPOINT}"
+  --episodes "${EPISODES}"
+  --num-envs "${NUM_ENVS}"
+)
 
-python - <<PY
-import json
-from pathlib import Path
+if [[ -n "${OUTPUT_DIR}" ]]; then
+  COMMAND+=(--output "${OUTPUT_DIR}")
+fi
+if [[ "${FORCE}" == "--force" ]]; then
+  COMMAND+=(--force)
+fi
 
-from dicedial.training_artifacts import write_artifact_manifest
-
-eval_dir = Path("${EVAL_DIR}")
-run_dir = Path("${RUN_DIR}")
-nominal = json.loads((eval_dir / "nominal" / "summary.json").read_text())
-robust = json.loads((eval_dir / "robust" / "summary.json").read_text())
-output = {
-    "project": "DICE",
-    "evaluation_dir": str(eval_dir),
-    "nominal": nominal,
-    "robust": robust,
-}
-(eval_dir / "final_summary.json").write_text(json.dumps(output, indent=2))
-write_artifact_manifest(run_dir)
-print(json.dumps(output, indent=2))
-PY
+"${COMMAND[@]}"

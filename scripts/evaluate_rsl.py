@@ -1,4 +1,4 @@
-"""Evaluate an RSL-RL DICE checkpoint on nominal or robust physics."""
+"""Evaluate an RSL-RL DICE checkpoint under one registered physics condition."""
 
 import argparse
 import json
@@ -48,6 +48,7 @@ from dicedial.agents.rsl_rl_ppo_cfg import (
     compatible_checkpoint_path,
     make_runner_cfg,
 )
+from dicedial.final_evaluation import sha256_file
 from dicedial.training_artifacts import write_artifact_manifest
 
 
@@ -71,7 +72,12 @@ def main():
     if args.output:
         output_dir = Path(args.output).resolve()
     else:
-        task_kind = "robust" if "Robust" in args.task else "nominal"
+        if "Robust" in args.task:
+            task_kind = "robust"
+        elif "Adverse" in args.task:
+            task_kind = "adverse"
+        else:
+            task_kind = "nominal"
         output_dir = checkpoint_source.parent / "evaluation" / task_kind
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -83,6 +89,10 @@ def main():
         use_fabric=not args.disable_fabric,
     )
     env_cfg.seed = args.seed
+    # Config dictionaries contain callable event terms on Isaac Lab releases
+    # supported by this repository. Normalize those values now so the summary
+    # remains valid JSON while retaining the exact resolved event parameters.
+    resolved_environment = json.loads(json.dumps(env_cfg.to_dict(), default=str))
 
     raw_env = gym.make(args.task, cfg=env_cfg)
     env = RslRlVecEnvWrapper(raw_env, clip_actions=agent_cfg.clip_actions)
@@ -270,9 +280,17 @@ def main():
         "project": "DICE",
         "task": args.task,
         "checkpoint": str(checkpoint),
+        "checkpoint_source": str(checkpoint_source),
+        "checkpoint_sha256": sha256_file(checkpoint_source),
         "seed": args.seed,
         "num_envs": num_envs,
         "episodes": int(len(frame)),
+        "environment_config": {
+            "class": type(env_cfg).__name__,
+            "events": resolved_environment.get("events"),
+            "episode_length_s": float(env_cfg.episode_length_s),
+            "control_decimation": int(env_cfg.decimation),
+        },
         "successful_commands": int(total_successes),
         "attempted_commands": attempted_commands,
         "issued_command_completion_rate": float(
