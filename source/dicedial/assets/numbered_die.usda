@@ -6,35 +6,36 @@
 )
 
 def Xform "Dice" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
 )
 {
     bool physics:rigidBodyEnabled = true
+    float physics:density = 567
 
     def Cube "Collision" (
         prepend apiSchemas = ["PhysicsCollisionAPI"]
     )
     {
-        double size = 0.065
+        double size = 0.060
         bool physics:collisionEnabled = true
         token visibility = "invisible"
     }
 
     def Cube "Core"
     {
-        double size = 0.064
+        double size = 0.059
         rel material:binding = </Dice/Looks/Core>
     }
 
     def Xform "Face1"
     {
-        double3 xformOp:translate = (0, 0, 0.0325)
+        double3 xformOp:translate = (0, 0, 0.0300)
         uniform token[] xformOpOrder = ["xformOp:translate"]
 
         def Cube "Panel"
         {
             double size = 1
-            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            double3 xformOp:scale = (0.055, 0.055, 0.0012)
             uniform token[] xformOpOrder = ["xformOp:scale"]
             rel material:binding = </Dice/Looks/Face1>
         }
@@ -51,13 +52,13 @@ def Xform "Dice" (
     def Xform "Face6"
     {
         quatd xformOp:orient = (0, 1, 0, 0)
-        double3 xformOp:translate = (0, 0, -0.0325)
+        double3 xformOp:translate = (0, 0, -0.0300)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
 
         def Cube "Panel"
         {
             double size = 1
-            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            double3 xformOp:scale = (0.055, 0.055, 0.0012)
             uniform token[] xformOpOrder = ["xformOp:scale"]
             rel material:binding = </Dice/Looks/Face6>
         }
@@ -114,13 +115,13 @@ def Xform "Dice" (
     def Xform "Face2"
     {
         quatd xformOp:orient = (0.70710678, 0, 0.70710678, 0)
-        double3 xformOp:translate = (0.0325, 0, 0)
+        double3 xformOp:translate = (0.0300, 0, 0)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
 
         def Cube "Panel"
         {
             double size = 1
-            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            double3 xformOp:scale = (0.055, 0.055, 0.0012)
             uniform token[] xformOpOrder = ["xformOp:scale"]
             rel material:binding = </Dice/Looks/Face2>
         }
@@ -145,13 +146,13 @@ def Xform "Dice" (
     def Xform "Face5"
     {
         quatd xformOp:orient = (0.70710678, 0, -0.70710678, 0)
-        double3 xformOp:translate = (-0.0325, 0, 0)
+        double3 xformOp:translate = (-0.0300, 0, 0)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
 
         def Cube "Panel"
         {
             double size = 1
-            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            double3 xformOp:scale = (0.055, 0.055, 0.0012)
             uniform token[] xformOpOrder = ["xformOp:scale"]
             rel material:binding = </Dice/Looks/Face5>
         }
@@ -200,13 +201,13 @@ def Xform "Dice" (
     def Xform "Face3"
     {
         quatd xformOp:orient = (0.70710678, -0.70710678, 0, 0)
-        double3 xformOp:translate = (0, 0.0325, 0)
+        double3 xformOp:translate = (0, 0.0300, 0)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
 
         def Cube "Panel"
         {
             double size = 1
-            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            double3 xformOp:scale = (0.055, 0.055, 0.0012)
             uniform token[] xformOpOrder = ["xformOp:scale"]
             rel material:binding = </Dice/Looks/Face3>
         }
@@ -239,13 +240,13 @@ def Xform "Dice" (
     def Xform "Face4"
     {
         quatd xformOp:orient = (0.70710678, 0.70710678, 0, 0)
-        double3 xformOp:translate = (0, -0.0325, 0)
+        double3 xformOp:translate = (0, -0.0300, 0)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
 
         def Cube "Panel"
         {
             double size = 1
-            double3 xformOp:scale = (0.060, 0.060, 0.0012)
+            double3 xformOp:scale = (0.055, 0.055, 0.0012)
             uniform token[] xformOpOrder = ["xformOp:scale"]
             rel material:binding = </Dice/Looks/Face4>
         }

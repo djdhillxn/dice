@@ -13,6 +13,7 @@ PORTFOLIO_SCHEMA_VERSION = 1
 DEFAULT_RESOLUTION = (1920, 1080)
 RAW_FPS = 60
 EXPORT_FPS = 30
+PRESENTATION_COLLISION_EXTENT_M = (0.060, 0.060, 0.060)
 
 PORTFOLIO_CONDITIONS = {
     "nominal": {
@@ -291,6 +292,7 @@ def compare_physics_snapshots(
                 )
             )
         maximum = max(errors, default=0.0)
+        maximum_index = errors.index(maximum) if errors else 0
         comparisons[field] = {
             "status": "mismatch" if any(violations) else "match",
             "maximum_relative_error": maximum,
@@ -299,7 +301,9 @@ def compare_physics_snapshots(
             raise ValueError(
                 f"Presentation die {field} differs from stock by {100.0 * maximum:.2f}% "
                 f"(relative limit {100.0 * relative_tolerance:.2f}%, "
-                f"absolute floor {absolute_tolerance:.3g})"
+                f"absolute floor {absolute_tolerance:.3g}; "
+                f"stock={expected_values[maximum_index]:.9g}, "
+                f"numbered={actual_values[maximum_index]:.9g})"
             )
     return {
         "relative_tolerance": relative_tolerance,

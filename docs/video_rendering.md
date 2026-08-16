@@ -134,6 +134,7 @@ videos/<timestamped-run>_model_4000/
 ├── audit/
 │   ├── stock/
 │   ├── numbered/
+│   ├── physics_snapshots.json
 │   └── physics_audit.json
 ├── scout/<condition>/seed_<seed>/
 │   ├── trajectory.npz

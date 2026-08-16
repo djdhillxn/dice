@@ -20,6 +20,10 @@ numbered die. Its collision size and density are aligned with the stock cube
 configuration, but its visible pips are used only for the final videos. The
 nominal, symmetric-variation, and adverse presentation variants mirror the
 corresponding material conditions without changing the learned policy.
+The physical collision cube is exactly 60 mm per side. Its 59 mm visual core,
+face panels, and pips have no collision API and do not contribute to dynamics.
+The rigid-body prim explicitly authors `PhysicsMassAPI` with the same
+567 kg/m³ density as the stock Shadow Hand configuration.
 
 ## Policy interface
 

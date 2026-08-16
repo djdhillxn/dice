@@ -82,6 +82,7 @@ from dicedial.portfolio_video import (
     CAMERA_PRESETS,
     PORTFOLIO_CONDITIONS,
     PORTFOLIO_SCHEMA_VERSION,
+    PRESENTATION_COLLISION_EXTENT_M,
     parse_resolution,
     sha256_file,
     write_json,
@@ -149,7 +150,7 @@ def _physics_snapshot(unwrapped, presentation_task):
     view = unwrapped.object.root_physx_view
     payload = {
         "configured_collision_extent_m": (
-            [0.065, 0.065, 0.065] if presentation_task else None
+            list(PRESENTATION_COLLISION_EXTENT_M) if presentation_task else None
         ),
     }
     for key, method_name in (
@@ -249,6 +250,11 @@ def main():
     env_cfg.seed = args.seed
     env_cfg.emit_step_metrics = True
     env_cfg.wait_for_textures = not args.no_video
+    # Every presentation/audit invocation uses one environment. Disabling the
+    # clone-in-Fabric path avoids Isaac's misleading "Failed to clone in
+    # Fabric" diagnostic when the stock 256-environment evaluation config is
+    # deliberately overridden to one instance.
+    env_cfg.scene.clone_in_fabric = False
     env_cfg.viewer.eye = camera["eye"]
     env_cfg.viewer.lookat = camera["lookat"]
     env_cfg.viewer.origin_type = "world"

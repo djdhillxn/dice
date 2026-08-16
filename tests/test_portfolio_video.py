@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from dicedial.portfolio_video import (
+    PRESENTATION_COLLISION_EXTENT_M,
     compare_metric_traces,
     compare_physics_snapshots,
     parse_resolution,
@@ -73,6 +74,22 @@ def _write_trace(path, alignment_offset=0.0, event_override=None):
 
 
 class TestPortfolioVideo(unittest.TestCase):
+    def test_numbered_die_collision_matches_stock_dexcube_extent(self):
+        asset = (
+            Path(__file__).parents[1]
+            / "source"
+            / "dicedial"
+            / "assets"
+            / "numbered_die.usda"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(PRESENTATION_COLLISION_EXTENT_M, (0.060, 0.060, 0.060))
+        self.assertIn('"PhysicsMassAPI"', asset)
+        self.assertIn("float physics:density = 567", asset)
+        self.assertIn("double size = 0.060", asset)
+        self.assertNotIn("double size = 0.065", asset)
+        self.assertIn("double size = 0.059", asset)
+        self.assertNotIn("0.0325", asset)
+
     def test_parses_resolution_and_seed_ranges(self):
         self.assertEqual(parse_resolution("1920x1080"), (1920, 1080))
         self.assertEqual(parse_seed_spec("7:9,11,9"), [7, 8, 9, 11])

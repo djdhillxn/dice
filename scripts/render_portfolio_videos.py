@@ -728,11 +728,15 @@ def main():
                 no_video=True,
                 video_length=1,
             )
+            physics_snapshots = {
+                "stock": stock["physics_snapshot"],
+                "numbered": presentation["physics_snapshot"],
+            }
+            write_json(audit_root / "physics_snapshots.json", physics_snapshots)
             audit = compare_physics_snapshots(
                 stock["physics_snapshot"], presentation["physics_snapshot"]
             )
-            audit["stock"] = stock["physics_snapshot"]
-            audit["numbered"] = presentation["physics_snapshot"]
+            audit.update(physics_snapshots)
             write_json(audit_root / "physics_audit.json", audit)
         state["physics_audit"] = audit or {"status": "skipped"}
         state["phases"].append("physics_audit")
