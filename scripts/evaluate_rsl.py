@@ -1,5 +1,8 @@
 """Evaluate an RSL-RL DICE checkpoint under one registered physics condition."""
 
+# Isaac Sim must launch before importing its runtime-dependent modules.
+# ruff: noqa: E402
+
 import argparse
 import json
 from pathlib import Path

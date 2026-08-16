@@ -9,6 +9,10 @@ iteration zero.  The environments differ only in their runtime purpose:
 * ``DICE-Shadow-Adverse-v0``: fixed heavy, low-friction material stress test.
 * ``DICE-Shadow-Play-v0``: one numbered die, deterministic command sequence,
   no randomization, and a presentation camera.
+* ``DICE-Shadow-Play-Robust-v0``: numbered-die playback with the held-out
+  symmetric material distribution.
+* ``DICE-Shadow-Play-Adverse-v0``: numbered-die playback at the fixed adverse
+  heavy, low-friction corner.
 """
 
 from pathlib import Path
@@ -75,6 +79,25 @@ class DiceRobustObjectEventsCfg:
             "mass_distribution_params": (0.8, 1.2),
             "operation": "scale",
             "distribution": "uniform",
+        },
+    )
+
+
+@configclass
+class DiceNominalObjectEventsCfg:
+    """Explicit nominal material contract for the presentation die."""
+
+    object_physics_material = EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="reset",
+        min_step_count_between_reset=1,
+        params={
+            "asset_cfg": SceneEntityCfg("object"),
+            "static_friction_range": (1.0, 1.0),
+            "dynamic_friction_range": (1.0, 1.0),
+            "restitution_range": (0.0, 0.0),
+            "num_buckets": 1,
+            "make_consistent": True,
         },
     )
 
@@ -185,6 +208,13 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
     # unnecessary in headless training/evaluation and can dominate startup/reset.
     visualize_goal_marker = False
 
+    # DirectRLEnv normally resets terminal environments inside ``step`` before
+    # an outer video wrapper requests its frame. Presentation environments can
+    # opt out for the final terminal transition so a six-command hold or an
+    # adverse drop remains visible. Training and evaluation always keep the
+    # default automatic-reset behavior.
+    defer_terminal_reset_for_capture = False
+
     # Low-pass joint targets. The inherited full-observation Shadow Hand uses
     # 1.0, but precise settling benefits from the 0.3 smoothing used by Isaac
     # Lab's OpenAI-style Shadow Hand configuration.
@@ -264,5 +294,25 @@ class DicePlayEnvCfg(DiceBaseEnvCfg):
     max_commands_per_episode = 6
     episode_length_s = 40.0
     emit_step_metrics = True
-    visualize_goal_marker = True
-    events = None
+    visualize_goal_marker = False
+    defer_terminal_reset_for_capture = True
+    events = DiceNominalObjectEventsCfg()
+
+
+@configclass
+class DicePlayRobustEnvCfg(DicePlayEnvCfg):
+    """Numbered-die presentation under symmetric held-out physics variation."""
+
+    events = DiceRobustObjectEventsCfg()
+
+
+@configclass
+class DicePlayAdverseEnvCfg(DicePlayEnvCfg):
+    """Numbered-die presentation at the fixed heavy/slippery corner."""
+
+    # Continue the command cycle until the object drops or the same 24-second
+    # horizon used by final evaluation expires. This exposes the observed
+    # long-horizon retention boundary instead of stopping after six commands.
+    max_commands_per_episode = 0
+    episode_length_s = 24.0
+    events = DiceAdverseObjectEventsCfg()

@@ -90,6 +90,10 @@ episode. The experiment and its quantitative evaluation are closed. See
 
 ## Presentation
 
-The optional final presentation artifact is one deterministic six-command
-episode with the numbered die and no randomization. Keep the raw video and the
-annotated version; it does not alter the completed quantitative evaluation.
+The final presentation package contains three videos: a compact nominal hero,
+a multi-angle nominal task explainer, and a robustness/failure-boundary story
+that includes the adverse retention failure. It is generated from the frozen
+`model_4000.pt` checkpoint by `scripts/render_portfolio_videos.py`. Rendering
+does not alter or extend the completed quantitative evaluation. Selection,
+physics-audit, trajectory-replay, encoding, and GitHub Pages requirements are
+defined in [video_rendering.md](video_rendering.md).

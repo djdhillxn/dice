@@ -63,7 +63,13 @@ For video annotation support:
 python -m pip install -e ".[video]"
 ```
 
-DICE pins `numpy==1.26.0` because Isaac Sim 5.1 requires that NumPy version, and pins `opencv-python-headless==4.11.0.86` because the VM does not need OpenCV GUI support. Do not install the latest OpenCV 5 wheel in this Isaac environment: on Python 3.11 it can require NumPy 2 and replace Isaac Sim's compatible NumPy.
+DICE pins `numpy==1.26.0` because Isaac Sim 5.1 requires that NumPy version,
+and pins `opencv-python-headless==4.11.0.86` because the VM does not need
+OpenCV GUI support. The video extra also installs MoviePy for Gymnasium's raw
+capture and Pillow for anti-aliased HUD text; final H.264 encoding requires the
+system `ffmpeg` package. Do not install the latest OpenCV 5 wheel in this Isaac
+environment: on Python 3.11 it can require NumPy 2 and replace Isaac Sim's
+compatible NumPy.
 
 If a previous editable install already upgraded NumPy to 2.x, repair the active `dice` environment once:
 
@@ -205,8 +211,9 @@ Forward port `6006` over SSH from your local machine and open `http://localhost:
 | `scripts/evaluate_rsl.py` | Single-condition nominal, robust, or adverse evaluation with progress and JSON/CSV outputs | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/<run>/model_4000.pt --episodes 1000` |
 | `scripts/run_checkpoint_sweep.py` | Discovers, nominally evaluates, and ranks every saved checkpoint except `model_0.pt` | `python -u scripts/run_checkpoint_sweep.py <timestamp>_<run_name>` |
 | `scripts/run_final_evaluation.sh` | Runs the three final conditions, supports interruption-safe reuse, and writes combined JSON/CSV/text results | `bash scripts/run_final_evaluation.sh outputs/<run>/model_4000.pt` |
-| `scripts/play_rsl.py` | Renders continuous 6-face sequence (`1 -> 6 -> 3 -> 5 -> 2 -> 4`) | `python scripts/play_rsl.py --task DICE-Shadow-Play-v0 --checkpoint outputs/<run>/model_4000.pt --output videos/DICE` |
-| `scripts/annotate_video.py` | Overlays live telemetry metrics (target, top face, alignment, hold) onto rendered MP4 | `python scripts/annotate_video.py --video videos/DICE/raw/DICE.mp4 --metrics videos/DICE/video_metrics.csv --output videos/DICE/annotated.mp4` |
+| `scripts/render_portfolio_videos.py` | Produces the three final portfolio videos, posters, manifest, and checksums | `python -u scripts/render_portfolio_videos.py <timestamp>_<run_name>` |
+| `scripts/play_rsl.py` | Low-level deterministic condition/camera capture and action-trajectory replay | `python -u scripts/play_rsl.py --checkpoint outputs/<run>/model_4000.pt --condition nominal --camera hero --output videos/manual --headless` |
+| `scripts/annotate_video.py` | Strictly synchronizes the scalable HUD and creates a browser-compatible H.264 MP4 | See `docs/video_rendering.md` |
 
 ---
 
@@ -247,7 +254,9 @@ In naive setups, policies receive a static posture reward proportional to how cl
 | `DICE-Shadow-Eval-v0` | Nominal evaluation | stock instanceable DexCube | none |
 | `DICE-Shadow-Robust-v0` | Symmetric held-out robustness evaluation | stock instanceable DexCube | mass and physically consistent friction ±20% |
 | `DICE-Shadow-Adverse-v0` | Adverse material stress evaluation | stock instanceable DexCube | fixed 1.5x mass and 0.7 friction |
-| `DICE-Shadow-Play-v0` | Six-command video | local numbered die | none |
+| `DICE-Shadow-Play-v0` | Six-command video | local numbered die | fixed nominal friction |
+| `DICE-Shadow-Play-Robust-v0` | Six-command symmetric-variation video | local numbered die | mass and physically consistent friction ±20% |
+| `DICE-Shadow-Play-Adverse-v0` | Long-horizon adverse failure video | local numbered die | fixed 1.5x mass and 0.7 friction |
 
 ---
 
@@ -338,16 +347,14 @@ path. Completed matching evaluations are reused after an interruption; pass
 
 ### Rendering Video
 ```bash
-python scripts/play_rsl.py \
-  --task DICE-Shadow-Play-v0 \
-  --checkpoint outputs/<timestamp>_strong_run/model_4000.pt \
-  --output videos/DICE
+python -u scripts/render_portfolio_videos.py \
+  <timestamp>_<run_name>
 ```
 
-### Annotating Video
-```bash
-python scripts/annotate_video.py \
-  --video videos/DICE/raw/DICE.mp4 \
-  --metrics videos/DICE/video_metrics.csv \
-  --output videos/DICE/DICE_annotated.mp4
-```
+This headless GCP workflow verifies the presentation die against the stock
+evaluation object, selects representative deterministic trajectories, renders
+three camera presets, rejects unsynchronized replays, and produces the hero,
+technical-explainer, and robustness-boundary MP4s under
+`videos/<run>_model_4000/exports/`. Install Ubuntu's `ffmpeg` and
+`fonts-dejavu-core` packages first. See the complete
+[portfolio video rendering runbook](docs/video_rendering.md).

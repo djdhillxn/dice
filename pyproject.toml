@@ -18,7 +18,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-video = ["opencv-python-headless==4.11.0.86"]
+video = [
+  "moviepy>=1.0.3,<3",
+  "opencv-python-headless==4.11.0.86",
+  "Pillow>=10.4,<13",
+]
 
 [tool.setuptools]
 package-dir = {"" = "source"}

@@ -15,7 +15,11 @@ fixes the object's mass at 1.5 times nominal and its static/dynamic friction at
 0.7. This isolates a heavy, slippery material shift without changing geometry,
 observations, commands, or success criteria.
 
-The single-environment play configuration replaces it with the local numbered die. Its collision size and density are aligned with the stock cube configuration, but its visible pips are used only for the final video.
+The single-environment presentation configurations replace it with the local
+numbered die. Its collision size and density are aligned with the stock cube
+configuration, but its visible pips are used only for the final videos. The
+nominal, symmetric-variation, and adverse presentation variants mirror the
+corresponding material conditions without changing the learned policy.
 
 ## Policy interface
 
@@ -81,5 +85,13 @@ train_rsl.py
                     ┌─ evaluate_rsl.py → nominal metrics
 .pt checkpoint ─────┼─ evaluate_rsl.py → symmetric robust metrics
                     ├─ evaluate_rsl.py → adverse material metrics
-                    └─ play_rsl.py     → raw MP4 + overlay CSV
+                    ├─ play_rsl.py     → deterministic trajectories + camera captures
+                    └─ render_portfolio_videos.py
+                                         → three web MP4s + posters + manifest
 ```
+
+The portfolio coordinator reuses `play_rsl.py` and `annotate_video.py`; it does
+not implement a second policy-loading or simulation path. Presentation-only
+environment variants use the numbered die under nominal, symmetric held-out,
+and fixed adverse physics. Saved action trajectories are replayed across fixed
+camera presets and their task-event traces must match before composition.

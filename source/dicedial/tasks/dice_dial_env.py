@@ -777,6 +777,27 @@ class DiceEnv(InHandManipulationEnv):
             env_ids = self.hand._ALL_INDICES
         env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
         initial_reset = getattr(self, "_initial_reset_pending", False)
+
+        # The direct environment resets terminal instances internally before a
+        # Gym video wrapper renders the post-step frame. A single presentation
+        # environment may defer only that terminal reset so the completed hold
+        # or dropped object remains visible. The process exits immediately after
+        # capture; training/evaluation configs never enable this branch.
+        if self.cfg.defer_terminal_reset_for_capture and not initial_reset:
+            command_limit = torch.zeros_like(self.last_out_of_reach[env_ids])
+            if self.cfg.max_commands_per_episode > 0:
+                command_limit = (
+                    self.successes[env_ids] >= self.cfg.max_commands_per_episode
+                )
+            terminal_capture = self.last_out_of_reach[env_ids] | command_limit
+            if bool(terminal_capture.any().item()):
+                if env_ids.numel() != 1 or not bool(terminal_capture.all().item()):
+                    raise RuntimeError(
+                        "Deferred terminal reset is supported only for one "
+                        "terminal presentation environment."
+                    )
+                return
+
         if initial_reset:
             self._startup_log(self.cfg, "First reset: entering Shadow Hand reset.")
 

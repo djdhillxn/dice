@@ -90,7 +90,7 @@ $$\theta_t = \arccos(\operatorname{clamp}(\text{alignment}_t)),\qquad
 3. **Drop/Throughput Trade-Off**: Report drop rate alongside command completion and throughput across 1,000 nominal test episodes; a higher-throughput policy is not rejected solely for exceeding the earlier aspirational 5% drop target.
 4. **Held-Out Mass & Friction Robustness**: Evaluated on `DICE-Shadow-Robust-v0` ($\pm 20\%$ mass & friction).
 5. **Adverse Material Stress Test**: Evaluated on `DICE-Shadow-Adverse-v0` with fixed $1.5\times$ object mass and $0.7$ surface friction.
-6. **Deterministic Playback Pipeline**: Supports rendering the 6-face sequence (`1 -> 6 -> 3 -> 5 -> 2 -> 4`) and annotating it with telemetry metrics. Producing the portfolio video is an optional presentation step, not part of the quantitative acceptance criteria.
+6. **Deterministic Presentation Pipeline**: Produces a nominal hero, a multi-angle six-face task explainer, and a robustness/failure-boundary video from replay-validated action trajectories. Rendering remains a presentation step, not part of the quantitative acceptance criteria.
 
 ---
 

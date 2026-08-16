@@ -9,6 +9,12 @@ _REGISTRATIONS = {
     "DICE-Shadow-Robust-v0": "dicedial.tasks.dice_dial_env_cfg:DiceRobustEnvCfg",
     "DICE-Shadow-Adverse-v0": "dicedial.tasks.dice_dial_env_cfg:DiceAdverseEnvCfg",
     "DICE-Shadow-Play-v0": "dicedial.tasks.dice_dial_env_cfg:DicePlayEnvCfg",
+    "DICE-Shadow-Play-Robust-v0": (
+        "dicedial.tasks.dice_dial_env_cfg:DicePlayRobustEnvCfg"
+    ),
+    "DICE-Shadow-Play-Adverse-v0": (
+        "dicedial.tasks.dice_dial_env_cfg:DicePlayAdverseEnvCfg"
+    ),
 }
 
 for environment_id, config_entry_point in _REGISTRATIONS.items():

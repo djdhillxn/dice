@@ -1,5 +1,8 @@
 """Train DICE once on the complete final task with RSL-RL PPO."""
 
+# Isaac Sim must launch before importing its runtime-dependent modules.
+# ruff: noqa: E402
+
 import argparse
 import faulthandler
 import hashlib
