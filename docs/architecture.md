@@ -93,7 +93,8 @@ train_rsl.py
                     ├─ evaluate_rsl.py → adverse material metrics
                     ├─ play_rsl.py     → deterministic trajectories + camera captures
                     └─ render_portfolio_videos.py
-                                         → three web MP4s + posters + manifest
+                                         → three web MP4s + Markdown captions
+                                           + posters + manifest
 ```
 
 The portfolio coordinator reuses `play_rsl.py` and `annotate_video.py`; it does
@@ -101,3 +102,9 @@ not implement a second policy-loading or simulation path. Presentation-only
 environment variants use the numbered die under nominal, symmetric held-out,
 and fixed adverse physics. Saved action trajectories are replayed across fixed
 camera presets and their task-event traces must match before composition.
+The public presentation keeps the original 60 FPS captures as provenance and
+exports 30 FPS footage at 0.5× playback. Nominal and adverse evidence use two
+synchronized full-height views with one shared dynamic HUD; the physics-shift
+video compares separately selected median-like nominal and ±20% rollouts. A
+composition-only path can transactionally replace these public exports without
+rerunning simulation or modifying the saved captures.

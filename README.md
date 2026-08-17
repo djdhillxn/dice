@@ -211,7 +211,7 @@ Forward port `6006` over SSH from your local machine and open `http://localhost:
 | `scripts/evaluate_rsl.py` | Single-condition nominal, robust, or adverse evaluation with progress and JSON/CSV outputs | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/<run>/model_4000.pt --episodes 1000` |
 | `scripts/run_checkpoint_sweep.py` | Discovers, nominally evaluates, and ranks every saved checkpoint except `model_0.pt` | `python -u scripts/run_checkpoint_sweep.py <timestamp>_<run_name>` |
 | `scripts/run_final_evaluation.sh` | Runs the three final conditions, supports interruption-safe reuse, and writes combined JSON/CSV/text results | `bash scripts/run_final_evaluation.sh outputs/<run>/model_4000.pt` |
-| `scripts/render_portfolio_videos.py` | Produces the three final portfolio videos, posters, manifest, and checksums | `python -u scripts/render_portfolio_videos.py <timestamp>_<run_name>` |
+| `scripts/render_portfolio_videos.py` | Produces three half-speed, dual-view portfolio videos with posters, Markdown captions, manifest, and checksums; can recompose completed captures without Isaac Sim | `python -u scripts/render_portfolio_videos.py <timestamp>_<run_name>` |
 | `scripts/play_rsl.py` | Low-level deterministic condition/camera capture and action-trajectory replay | `python -u scripts/play_rsl.py --checkpoint outputs/<run>/model_4000.pt --condition nominal --camera hero --output videos/manual --headless` |
 | `scripts/annotate_video.py` | Strictly synchronizes the scalable HUD and creates a browser-compatible H.264 MP4 | See `docs/video_rendering.md` |
 
@@ -346,6 +346,7 @@ path. Completed matching evaluations are reused after an interruption; pass
 `ranking.csv`, `ranking.txt`, and `selected_checkpoint.txt`.
 
 ### Rendering Video
+
 ```bash
 python -u scripts/render_portfolio_videos.py \
   <timestamp>_<run_name>
@@ -353,8 +354,21 @@ python -u scripts/render_portfolio_videos.py \
 
 This headless GCP workflow verifies the presentation die against the stock
 evaluation object, selects representative deterministic trajectories, renders
-three camera presets, rejects unsynchronized replays, and produces the hero,
-technical-explainer, and robustness-boundary MP4s under
-`videos/<run>_model_4000/exports/`. Install Ubuntu's `ffmpeg` and
-`fonts-dejavu-core` packages first. See the complete
+three camera presets, and rejects unsynchronized replays. It exports nominal
+oblique/top success, nominal-versus-physics-variation, and adverse oblique/side
+failure-boundary videos at 0.5× playback under
+`videos/<run>_model_4000/exports/`. Each MP4 has a footage-derived poster and a
+same-named Markdown caption; static title cards are not baked into the videos.
+
+To rebuild only the presentation from already completed captures, without
+launching Isaac Sim, run:
+
+```bash
+python -u scripts/render_portfolio_videos.py \
+  <timestamp>_<run_name> \
+  --compose-only \
+  --force
+```
+
+Install Ubuntu's `ffmpeg` and `fonts-dejavu-core` packages first. See the complete
 [portfolio video rendering runbook](docs/video_rendering.md).

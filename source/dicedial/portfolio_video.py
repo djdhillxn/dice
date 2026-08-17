@@ -14,6 +14,8 @@ PORTFOLIO_SCHEMA_VERSION = 1
 DEFAULT_RESOLUTION = (1920, 1080)
 RAW_FPS = 60
 EXPORT_FPS = 30
+PORTFOLIO_PLAYBACK_SPEED = 0.5
+PORTFOLIO_FINAL_HOLD_SECONDS = 0.75
 PRESENTATION_COLLISION_EXTENT_M = (0.060, 0.060, 0.060)
 PRESENTATION_MASS_KG = 0.216
 
@@ -61,8 +63,8 @@ PORTFOLIO_CONDITIONS = {
 }
 
 # The hero preset preserves the existing known-good presentation view. The two
-# diagnostic views are intentionally fixed and static; a contact sheet is still
-# produced so their framing can be reviewed before final rendering.
+# diagnostic views are intentionally fixed and static so repeated trajectory
+# replays can be synchronized into full-height presentation panels.
 CAMERA_PRESETS = {
     "hero": {
         "label": "Hero oblique",
@@ -105,6 +107,156 @@ def sha256_file(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def presentation_duration(
+    simulation_duration,
+    playback_speed=PORTFOLIO_PLAYBACK_SPEED,
+    final_hold_seconds=PORTFOLIO_FINAL_HOLD_SECONDS,
+):
+    """Return the expected edited duration for one complete rollout."""
+
+    simulation_duration = float(simulation_duration)
+    playback_speed = float(playback_speed)
+    final_hold_seconds = float(final_hold_seconds)
+    if simulation_duration < 0.0:
+        raise ValueError("Simulation duration must be non-negative")
+    if playback_speed <= 0.0:
+        raise ValueError("Playback speed must be positive")
+    if final_hold_seconds < 0.0:
+        raise ValueError("Final hold duration must be non-negative")
+    return simulation_duration / playback_speed + final_hold_seconds
+
+
+def resolve_portfolio_artifact(path, output_directory):
+    """Resolve a manifest artifact after a portfolio directory has been copied."""
+
+    output_directory = Path(output_directory).expanduser().resolve()
+    recorded = Path(path).expanduser()
+    if recorded.is_file():
+        return recorded.resolve()
+
+    matching_indices = [
+        index
+        for index, part in enumerate(recorded.parts)
+        if part == output_directory.name
+    ]
+    if not matching_indices:
+        raise FileNotFoundError(
+            f"Portfolio artifact does not exist and cannot be rebased: {recorded}"
+        )
+    relative_parts = recorded.parts[matching_indices[-1] + 1 :]
+    candidate = output_directory.joinpath(*relative_parts).resolve()
+    try:
+        candidate.relative_to(output_directory)
+    except ValueError as exc:
+        raise ValueError(
+            f"Rebased artifact escapes the portfolio root: {recorded}"
+        ) from exc
+    if not candidate.is_file():
+        raise FileNotFoundError(
+            f"Rebased portfolio artifact does not exist: {candidate}"
+        )
+    return candidate
+
+
+def build_portfolio_captions(final_results, selections, playback_speed=0.5):
+    """Build the three copy-ready Markdown companions for public videos."""
+
+    missing_results = {"nominal", "robust", "adverse"} - final_results.keys()
+    missing_selections = {"nominal", "robust", "adverse"} - selections.keys()
+    if missing_results or missing_selections:
+        raise ValueError(
+            "Caption inputs are incomplete: "
+            f"results={sorted(missing_results)}, selections={sorted(missing_selections)}"
+        )
+    if playback_speed <= 0.0:
+        raise ValueError("Playback speed must be positive")
+
+    def percent(condition, field):
+        return 100.0 * float(final_results[condition][field])
+
+    def episodes(condition):
+        return int(float(final_results[condition]["episodes"]))
+
+    nominal = selections["nominal"]
+    robust = selections["robust"]
+    adverse = selections["adverse"]
+    disclosure = (
+        f"Footage is presented at **{playback_speed:g}× playback** for visual "
+        "clarity; the deterministic policy was executed and evaluated at the "
+        "original 60 Hz control rate."
+    )
+
+    nominal_caption = f"""# Nominal semantic success
+
+The requested die face is supplied as a semantic command to one deterministic
+20-DoF Shadow Hand policy. The synchronized oblique and top-down views show the
+same action trajectory, allowing the manipulation and upward-facing result to
+be checked together.
+
+- **Representative rollout:** seed {int(nominal["seed"])}, selected as the successful six-command candidate nearest the median completion time
+- **Rollout result:** {int(nominal["commands_completed"])} commands in {float(nominal["duration_seconds"]):.2f} simulation seconds, with no drop
+- **Final evaluation:** {percent("nominal", "issued_command_completion_rate"):.2f}% issued-command completion, {percent("nominal", "drop_rate"):.2f}% episode drop rate, {float(final_results["nominal"]["mean_consecutive_commands"]):.3f} mean consecutive commands over {episodes("nominal"):,} episodes
+- **Views:** oblique manipulation view (left) and top-down verification view (right)
+
+{disclosure}
+
+## What to watch
+
+The target-face indicator changes only after the requested face is aligned,
+stabilized, and held through all 20 confirmation steps. The top-down view makes
+that semantic success independently visible.
+"""
+
+    variation_caption = f"""# Symmetric physics variation
+
+This comparison places a representative nominal rollout beside a representative
+held-out physics rollout. The variation samples die mass and static/dynamic
+friction within ±20% of nominal; both use the same trained policy and the same
+six-command semantic cycle.
+
+- **Nominal rollout:** seed {int(nominal["seed"])}, {int(nominal["commands_completed"])} commands in {float(nominal["duration_seconds"]):.2f} simulation seconds
+- **Variation rollout:** seed {int(robust["seed"])}, {int(robust["commands_completed"])} commands in {float(robust["duration_seconds"]):.2f} simulation seconds
+- **Nominal evaluation:** {percent("nominal", "issued_command_completion_rate"):.2f}% command completion and {percent("nominal", "drop_rate"):.2f}% drops over {episodes("nominal"):,} episodes
+- **Variation evaluation:** {percent("robust", "issued_command_completion_rate"):.2f}% command completion and {percent("robust", "drop_rate"):.2f}% drops over {episodes("robust"):,} episodes
+
+{disclosure}
+
+## Interpretation
+
+The selected clips are median-like examples rather than the fastest trials.
+The aggregate evaluation—not either individual video—is the evidence for
+generalization under the held-out variation.
+"""
+
+    adverse_caption = f"""# Adverse retention boundary
+
+The adverse condition fixes die mass at 1.5× nominal and both object-friction
+coefficients at 0.7× nominal. Synchronized oblique and side-contact views show a
+representative rollout that completes multiple semantic commands before the
+grasp eventually fails.
+
+- **Representative rollout:** seed {int(adverse["seed"])}, selected to match the median failed episode in the final evaluation
+- **Rollout result:** {int(adverse["commands_completed"])} commands before dropping at {float(adverse["duration_seconds"]):.2f} simulation seconds
+- **Final evaluation:** {percent("adverse", "issued_command_completion_rate"):.2f}% issued-command completion, {percent("adverse", "drop_rate"):.2f}% episode drop rate, {float(final_results["adverse"]["mean_consecutive_commands"]):.3f} mean consecutive commands over {episodes("adverse"):,} episodes
+- **Views:** oblique manipulation view (left) and side contact/failure view (right)
+
+{disclosure}
+
+## Interpretation
+
+Semantic targeting remains strong, but long-horizon grasp retention degrades
+at this deliberately difficult heavy-and-slippery corner. This negative result
+identifies a concrete sim-to-real robustness direction rather than hiding the
+policy's failure boundary.
+"""
+
+    return {
+        "dice_nominal_success.md": nominal_caption,
+        "dice_physics_variation.md": variation_caption,
+        "dice_adverse_boundary.md": adverse_caption,
+    }
 
 
 def probe_portfolio_video(ffprobe, path, expected_resolution, expected_fps):

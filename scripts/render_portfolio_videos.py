@@ -6,27 +6,32 @@ import argparse
 import csv
 import importlib.metadata
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from statistics import median
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, features as pillow_features
 
 from dicedial.checkpoint_sweep import resolve_run_directory
 from dicedial.portfolio_video import (
     EXPORT_FPS,
+    PORTFOLIO_FINAL_HOLD_SECONDS,
+    PORTFOLIO_PLAYBACK_SPEED,
     PORTFOLIO_SCHEMA_VERSION,
     RAW_FPS,
+    build_portfolio_captions,
     compare_metric_traces,
     compare_physics_snapshots,
     parse_resolution,
     parse_seed_spec,
     probe_portfolio_video,
     read_json,
-    read_metric_rows,
+    resolve_portfolio_artifact,
     select_representative_scout,
     sha256_file,
     write_json,
@@ -39,8 +44,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Render the DICE hero, task-explainer, and robustness-boundary "
-            "portfolio videos from one completed run."
+            "Capture or recompose the three-video DICE portfolio package from "
+            "one completed run."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -55,6 +60,12 @@ def parse_args():
     parser.add_argument("--resolution", default="1920x1080")
     parser.add_argument("--raw-fps", type=int, default=RAW_FPS)
     parser.add_argument("--export-fps", type=int, default=EXPORT_FPS)
+    parser.add_argument(
+        "--playback-speed",
+        type=float,
+        default=PORTFOLIO_PLAYBACK_SPEED,
+        help="Presentation speed for all policy footage; simulation timing is unchanged.",
+    )
     parser.add_argument("--nominal-seeds", default="7:11")
     parser.add_argument("--robust-seeds", default="17:21")
     parser.add_argument("--adverse-seeds", default="7:22")
@@ -80,6 +91,14 @@ def parse_args():
         action="store_true",
         help="Replace this run/checkpoint's existing portfolio output directory.",
     )
+    parser.add_argument(
+        "--compose-only",
+        action="store_true",
+        help=(
+            "Reuse an existing completed capture package and transactionally "
+            "replace only its public exports; Isaac Sim is not launched."
+        ),
+    )
     values = parser.parse_args()
     try:
         values.resolution_tuple = parse_resolution(values.resolution)
@@ -92,6 +111,10 @@ def parse_args():
         parser.error(str(exc))
     if values.raw_fps <= 0 or values.export_fps <= 0:
         parser.error("Frame rates must be positive")
+    if values.playback_speed <= 0.0:
+        parser.error("--playback-speed must be positive")
+    if values.compose_only and not values.force:
+        parser.error("--compose-only requires --force to replace existing exports")
     return values
 
 
@@ -105,9 +128,12 @@ def _resolve_executable(value, label):
     raise FileNotFoundError(f"{label} executable not found: {value}")
 
 
-def _verify_video_toolchain(ffmpeg, webm):
+def _verify_video_toolchain(ffmpeg, webm, capture_required=True):
+    module_names = ["cv2"]
+    if capture_required:
+        module_names.append("moviepy")
     missing_modules = [
-        name for name in ("cv2", "moviepy") if importlib.util.find_spec(name) is None
+        name for name in module_names if importlib.util.find_spec(name) is None
     ]
     if missing_modules:
         raise ModuleNotFoundError(
@@ -122,7 +148,7 @@ def _verify_video_toolchain(ffmpeg, webm):
         text=True,
     )
     encoders = result.stdout + result.stderr
-    required = ["libx264", "libwebp"]
+    required = ["libx264"]
     if webm:
         required.append("libvpx-vp9")
     missing_encoders = [encoder for encoder in required if encoder not in encoders]
@@ -130,6 +156,8 @@ def _verify_video_toolchain(ffmpeg, webm):
         raise RuntimeError(
             f"FFmpeg is missing required encoders: {', '.join(missing_encoders)}"
         )
+    if not pillow_features.check("webp"):
+        raise RuntimeError("Pillow was built without required WebP support")
 
 
 def _run(command):
@@ -248,12 +276,25 @@ def _run_play(args, checkpoint, condition, seed, output, **kwargs):
     return summary
 
 
-def _run_annotation(args, ffmpeg, capture, output, style, post_roll=0.75):
+def _run_annotation(
+    args,
+    ffmpeg,
+    capture,
+    output,
+    style,
+    post_roll=PORTFOLIO_FINAL_HOLD_SECONDS,
+    video=None,
+    view_labels=(),
+    playback_speed=None,
+    output_fps=None,
+):
+    playback_speed = args.playback_speed if playback_speed is None else playback_speed
+    output_fps = args.export_fps if output_fps is None else output_fps
     command = [
         sys.executable,
         str(REPO_ROOT / "scripts" / "annotate_video.py"),
         "--video",
-        capture["raw_video"],
+        str(video or capture["raw_video"]),
         "--metrics",
         capture["metrics"],
         "--summary",
@@ -265,14 +306,18 @@ def _run_annotation(args, ffmpeg, capture, output, style, post_roll=0.75):
         "--style",
         style,
         "--output-fps",
-        str(args.export_fps),
+        str(output_fps),
         "--crf",
         "16",
         "--post-roll-seconds",
         str(post_roll),
+        "--playback-speed",
+        str(playback_speed),
         "--ffmpeg",
         ffmpeg,
     ]
+    for label in view_labels:
+        command.extend(["--view-label", label])
     _run(command)
     return output
 
@@ -295,120 +340,22 @@ def _font(size, bold=False):
         return ImageFont.load_default()
 
 
-def _create_card(path, resolution, eyebrow, title, lines, accent=(70, 211, 124)):
-    width, height = resolution
-    image = Image.new("RGB", resolution, (11, 16, 24))
-    draw = ImageDraw.Draw(image)
-    margin = round(width * 0.09)
-    draw.rounded_rectangle(
-        (margin, round(height * 0.20), width - margin, round(height * 0.80)),
-        radius=28,
-        fill=(18, 25, 36),
-        outline=(55, 68, 86),
-        width=2,
-    )
-    draw.text(
-        (margin + 64, round(height * 0.27)),
-        eyebrow.upper(),
-        font=_font(32, True),
-        fill=accent,
-    )
-    draw.text(
-        (margin + 64, round(height * 0.35)),
-        title,
-        font=_font(64, True),
-        fill=(246, 248, 251),
-    )
-    y = round(height * 0.49)
-    for line in lines:
-        draw.text(
-            (margin + 64, y),
-            line,
-            font=_font(34, False),
-            fill=(191, 202, 216),
-        )
-        y += 54
-    path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path)
-    return path
+def _compose_synchronized_views(ffmpeg, left, right, output, resolution, fps):
+    """Crop two synchronized 16:9 captures into readable full-height panels."""
 
-
-def _compose_sequence(ffmpeg, elements, output, resolution, fps, crf=20):
-    width, height = resolution
-    command = [ffmpeg, "-hide_banner", "-loglevel", "error"]
-    filters = []
-    labels = []
-    for index, element in enumerate(elements):
-        if element["type"] == "image":
-            command.extend(
-                [
-                    "-loop",
-                    "1",
-                    "-framerate",
-                    str(fps),
-                    "-t",
-                    str(element["duration"]),
-                    "-i",
-                    str(element["path"]),
-                ]
-            )
-            source_filter = (
-                f"[{index}:v]trim=duration={element['duration']},setpts=PTS-STARTPTS"
-            )
-        else:
-            command.extend(["-i", str(element["path"])])
-            start = float(element.get("start", 0.0))
-            end = element.get("end")
-            trim = f"trim=start={start}"
-            if end is not None:
-                trim += f":end={float(end)}"
-            speed = float(element.get("speed", 1.0))
-            source_filter = f"[{index}:v]{trim},setpts=(PTS-STARTPTS)/{speed}"
-        label = f"v{index}"
-        source_filter += (
-            f",scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=#0b1018,"
-            f"fps={fps},setsar=1,format=yuv420p[{label}]"
-        )
-        filters.append(source_filter)
-        labels.append(f"[{label}]")
-    filters.append("".join(labels) + f"concat=n={len(labels)}:v=1:a=0[outv]")
-    command.extend(
-        [
-            "-filter_complex",
-            ";".join(filters),
-            "-map",
-            "[outv]",
-            "-an",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            str(crf),
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            str(output),
-        ]
-    )
-    _run(command)
-    return output
-
-
-def _side_by_side(ffmpeg, left, right, output, duration, resolution, fps):
     width, height = resolution
     half_width = width // 2
-    panel_height = round(height * 0.56)
-    pad_y = (height - panel_height) // 2
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    panel_filter = (
+        f"crop=iw/2:ih:(iw-ow)/2:0,scale={half_width}:{height},fps={fps},setsar=1"
+    )
     filter_graph = (
-        f"[0:v]trim=duration={duration},setpts=PTS-STARTPTS,"
-        f"scale={half_width}:{panel_height},fps={fps},setsar=1[left];"
-        f"[1:v]trim=duration={duration},setpts=PTS-STARTPTS,"
-        f"scale={half_width}:{panel_height},fps={fps},setsar=1[right];"
-        f"[left][right]hstack=inputs=2,"
-        f"pad={width}:{height}:0:{pad_y}:color=#0b1018,format=yuv420p[outv]"
+        f"[0:v]{panel_filter}[left];"
+        f"[1:v]{panel_filter}[right];"
+        "[left][right]hstack=inputs=2:shortest=1,"
+        f"drawbox=x={half_width - 1}:y=0:w=2:h={height}:"
+        "color=#d8dee8@0.45:t=fill,format=yuv420p[outv]"
     )
     _run(
         [
@@ -441,7 +388,157 @@ def _side_by_side(ffmpeg, left, right, output, duration, resolution, fps):
     return output
 
 
+def _create_comparison_overlay(path, resolution, playback_speed):
+    """Create a transparent, temporary legend—not a standalone title card."""
+
+    width, height = resolution
+    image = Image.new("RGBA", resolution, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    font = _font(28, True)
+    small_font = _font(23, True)
+    margin = 42
+    chip_height = 58
+    chip_width = 390
+    for left, label, accent in (
+        (margin, "NOMINAL", (70, 211, 124, 255)),
+        (width // 2 + margin, "±20% PHYSICS VARIATION", (68, 196, 224, 255)),
+    ):
+        draw.rounded_rectangle(
+            (left, margin, left + chip_width, margin + chip_height),
+            radius=14,
+            fill=(15, 20, 28, 215),
+            outline=(255, 255, 255, 40),
+            width=1,
+        )
+        draw.text((left + 20, margin + 12), label, font=font, fill=accent)
+    speed_text = f"{playback_speed:g}x PLAYBACK"
+    speed_box = (
+        width - margin - 260,
+        height - margin - 54,
+        width - margin,
+        height - margin,
+    )
+    draw.rounded_rectangle(speed_box, radius=12, fill=(15, 20, 28, 205))
+    draw.text(
+        (speed_box[0] + 18, speed_box[1] + 12),
+        speed_text,
+        font=small_font,
+        fill=(226, 232, 240, 255),
+    )
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+    return path
+
+
+def _compose_physics_variation(
+    ffmpeg,
+    nominal_video,
+    robust_video,
+    overlay,
+    output,
+    nominal_duration,
+    robust_duration,
+    resolution,
+    output_fps,
+    playback_speed,
+    final_hold_seconds,
+):
+    """Compose complete median-like nominal/variation rollouts side by side."""
+
+    width, height = resolution
+    half_width = width // 2
+    longest_duration = max(nominal_duration, robust_duration)
+    nominal_pad = (longest_duration - nominal_duration) / playback_speed
+    robust_pad = (longest_duration - robust_duration) / playback_speed
+
+    def panel(index, duration, padding, label):
+        return (
+            f"[{index}:v]trim=duration={duration},"
+            f"setpts=(PTS-STARTPTS)/{playback_speed},"
+            f"crop=iw/2:ih:(iw-ow)/2:0,scale={half_width}:{height},"
+            f"fps={output_fps},tpad=stop_mode=clone:"
+            f"stop_duration={padding + final_hold_seconds},setsar=1[{label}]"
+        )
+
+    filter_graph = ";".join(
+        (
+            panel(0, nominal_duration, nominal_pad, "left"),
+            panel(1, robust_duration, robust_pad, "right"),
+            "[left][right]hstack=inputs=2:shortest=1[views]",
+            "[views][2:v]overlay=0:0:shortest=1,format=yuv420p[outv]",
+        )
+    )
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(nominal_video),
+            "-i",
+            str(robust_video),
+            "-loop",
+            "1",
+            "-framerate",
+            str(output_fps),
+            "-i",
+            str(overlay),
+            "-filter_complex",
+            filter_graph,
+            "-map",
+            "[outv]",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ]
+    )
+    return output
+
+
+def _replace_exports_transactionally(staged_exports, destination):
+    """Install validated exports while retaining rollback until replacement succeeds."""
+
+    staged_exports = Path(staged_exports)
+    destination = Path(destination)
+    backup = destination.parent / f".{destination.name}.previous"
+    if backup.exists():
+        raise FileExistsError(f"Stale export rollback directory exists: {backup}")
+    if destination.exists():
+        os.replace(destination, backup)
+    try:
+        os.replace(staged_exports, destination)
+    except BaseException:
+        if backup.exists() and not destination.exists():
+            os.replace(backup, destination)
+        raise
+    if backup.exists():
+        shutil.rmtree(backup)
+
+
 def _extract_image(ffmpeg, video, output, time_seconds, width=1280, webp=False):
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary_directory = None
+    encoded_output = output
+    if webp:
+        temporary_directory = tempfile.TemporaryDirectory(
+            prefix=".portfolio-poster-",
+            dir=output.parent,
+        )
+        encoded_output = Path(temporary_directory.name) / "frame.png"
     command = [
         ffmpeg,
         "-hide_banner",
@@ -456,32 +553,15 @@ def _extract_image(ffmpeg, video, output, time_seconds, width=1280, webp=False):
         "-vf",
         f"scale={width}:-2",
     ]
-    if webp:
-        command.extend(["-c:v", "libwebp", "-quality", "82"])
-    command.append(str(output))
-    _run(command)
-    return output
-
-
-def _create_contact_sheet(images, labels, output):
-    opened = [Image.open(path).convert("RGB") for path in images]
-    panel_width, panel_height = 640, 360
-    canvas = Image.new(
-        "RGB", (panel_width * len(opened), panel_height + 70), (11, 16, 24)
-    )
-    draw = ImageDraw.Draw(canvas)
-    for index, (image, label) in enumerate(zip(opened, labels)):
-        image.thumbnail((panel_width, panel_height))
-        x = index * panel_width + (panel_width - image.width) // 2
-        y = 70 + (panel_height - image.height) // 2
-        canvas.paste(image, (x, y))
-        draw.text(
-            (index * panel_width + 24, 20),
-            label,
-            font=_font(28, True),
-            fill=(236, 240, 246),
-        )
-    canvas.save(output, quality=86)
+    command.append(str(encoded_output))
+    try:
+        _run(command)
+        if webp:
+            with Image.open(encoded_output) as image:
+                image.save(output, format="WEBP", quality=82, method=6)
+    finally:
+        if temporary_directory is not None:
+            temporary_directory.cleanup()
     return output
 
 
@@ -569,23 +649,344 @@ def _adverse_selection_target(final_summary):
     }
 
 
-def _result_value(row, key):
-    return float(row[key])
+def _localized_captures(state, output_directory):
+    required = {
+        "nominal_hero",
+        "nominal_top",
+        "robust_hero",
+        "adverse_hero",
+        "adverse_side",
+    }
+    recorded = state.get("captures", {})
+    missing = required - recorded.keys()
+    if missing:
+        raise ValueError(f"Portfolio manifest is missing captures: {sorted(missing)}")
+
+    captures = {}
+    selections = state.get("selections", {})
+    for key in sorted(required):
+        expected_condition, expected_camera = key.split("_", maxsplit=1)
+        capture = dict(recorded[key])
+        for field in ("raw_video", "metrics", "initial_metrics"):
+            capture[field] = str(
+                resolve_portfolio_artifact(capture[field], output_directory)
+            )
+        summary_path = Path(capture["metrics"]).parent / "capture_summary.json"
+        summary = read_json(summary_path)
+        if summary.get("checkpoint_sha256") != state.get("checkpoint_sha256"):
+            raise ValueError(f"Capture checkpoint identity mismatch: {summary_path}")
+        if (
+            summary.get("condition") != expected_condition
+            or capture.get("condition") != expected_condition
+        ):
+            raise ValueError(f"Capture condition mismatch: {summary_path}")
+        if (
+            summary.get("camera") != expected_camera
+            or capture.get("camera") != expected_camera
+        ):
+            raise ValueError(f"Capture camera mismatch: {summary_path}")
+        expected_seed = int(selections[expected_condition]["seed"])
+        if int(summary.get("seed")) != expected_seed:
+            raise ValueError(f"Capture seed mismatch: {summary_path}")
+        if tuple(summary.get("resolution", ())) != tuple(state.get("resolution", ())):
+            raise ValueError(f"Capture resolution mismatch: {summary_path}")
+        if int(summary.get("raw_fps", 0)) != int(state.get("raw_fps", 0)):
+            raise ValueError(f"Capture frame-rate mismatch: {summary_path}")
+        captures[key] = capture
+
+    compare_metric_traces(
+        captures["nominal_hero"]["metrics"],
+        captures["nominal_top"]["metrics"],
+    )
+    compare_metric_traces(
+        captures["adverse_hero"]["metrics"],
+        captures["adverse_side"]["metrics"],
+    )
+    return captures
 
 
-def _success_times(metrics_path):
-    return [
-        float(row["sim_time_seconds"])
-        for row in read_metric_rows(metrics_path)
-        if int(float(row["success"])) == 1
-    ]
+def _compose_public_package(
+    args,
+    ffmpeg,
+    ffprobe,
+    output_directory,
+    state,
+    final_results,
+    composition_mode,
+):
+    """Build and transactionally install the presentation-only public package."""
+
+    selections = state.get("selections", {})
+    if {"nominal", "robust", "adverse"} - selections.keys():
+        raise ValueError("Portfolio manifest does not contain all selected rollouts")
+    captures = _localized_captures(state, output_directory)
+
+    nominal_duration = float(selections["nominal"]["duration_seconds"])
+    robust_duration = float(selections["robust"]["duration_seconds"])
+    adverse_duration = float(selections["adverse"]["duration_seconds"])
+    final_hold = PORTFOLIO_FINAL_HOLD_SECONDS
+
+    with tempfile.TemporaryDirectory(
+        prefix=".portfolio-compose-",
+        dir=output_directory,
+    ) as temporary_directory:
+        staging = Path(temporary_directory)
+        intermediate = staging / "intermediate"
+        exports = staging / "exports"
+        intermediate.mkdir()
+        exports.mkdir()
+
+        nominal_views = _compose_synchronized_views(
+            ffmpeg,
+            captures["nominal_hero"]["raw_video"],
+            captures["nominal_top"]["raw_video"],
+            intermediate / "nominal_oblique_top.mp4",
+            args.resolution_tuple,
+            args.raw_fps,
+        )
+        nominal_annotated = _run_annotation(
+            args,
+            ffmpeg,
+            captures["nominal_hero"],
+            intermediate / "dice_nominal_success.mp4",
+            "technical",
+            final_hold,
+            video=nominal_views,
+            view_labels=("Oblique", "Top view"),
+        )
+        nominal_export = exports / "dice_nominal_success.mp4"
+        shutil.copy2(nominal_annotated, nominal_export)
+
+        adverse_views = _compose_synchronized_views(
+            ffmpeg,
+            captures["adverse_hero"]["raw_video"],
+            captures["adverse_side"]["raw_video"],
+            intermediate / "adverse_oblique_side.mp4",
+            args.resolution_tuple,
+            args.raw_fps,
+        )
+        adverse_annotated = _run_annotation(
+            args,
+            ffmpeg,
+            captures["adverse_hero"],
+            intermediate / "dice_adverse_boundary.mp4",
+            "stress",
+            final_hold,
+            video=adverse_views,
+            view_labels=("Oblique", "Side view"),
+        )
+        adverse_export = exports / "dice_adverse_boundary.mp4"
+        shutil.copy2(adverse_annotated, adverse_export)
+
+        # Normalize the two comparison sources through the strict telemetry
+        # aligner. Style "none" leaves pixels untouched while restoring the
+        # terminal frame that MoviePy may omit at the encoding boundary.
+        nominal_comparison_source = _run_annotation(
+            args,
+            ffmpeg,
+            captures["nominal_hero"],
+            intermediate / "nominal_comparison_source.mp4",
+            "none",
+            0.0,
+            playback_speed=1.0,
+            output_fps=args.raw_fps,
+        )
+        robust_comparison_source = _run_annotation(
+            args,
+            ffmpeg,
+            captures["robust_hero"],
+            intermediate / "robust_comparison_source.mp4",
+            "none",
+            0.0,
+            playback_speed=1.0,
+            output_fps=args.raw_fps,
+        )
+        comparison_overlay = _create_comparison_overlay(
+            intermediate / "physics_variation_overlay.png",
+            args.resolution_tuple,
+            args.playback_speed,
+        )
+        variation_export = _compose_physics_variation(
+            ffmpeg,
+            nominal_comparison_source,
+            robust_comparison_source,
+            comparison_overlay,
+            exports / "dice_physics_variation.mp4",
+            nominal_duration,
+            robust_duration,
+            args.resolution_tuple,
+            args.export_fps,
+            args.playback_speed,
+            final_hold,
+        )
+
+        videos = [nominal_export, variation_export, adverse_export]
+        expected_durations = {
+            nominal_export.name: nominal_duration / args.playback_speed + final_hold,
+            variation_export.name: max(nominal_duration, robust_duration)
+            / args.playback_speed
+            + final_hold,
+            adverse_export.name: adverse_duration / args.playback_speed + final_hold,
+        }
+        poster_fractions = {
+            nominal_export.name: 0.50,
+            variation_export.name: 0.50,
+            adverse_export.name: 0.68,
+        }
+        export_metadata = []
+        posters = []
+        for video in videos:
+            metadata = probe_portfolio_video(
+                ffprobe,
+                video,
+                args.resolution_tuple,
+                args.export_fps,
+            )
+            expected = expected_durations[video.name]
+            tolerance = max(0.12, 3.0 / args.export_fps)
+            if abs(metadata["duration_seconds"] - expected) > tolerance:
+                raise ValueError(
+                    f"Unexpected edited duration for {video.name}: "
+                    f"{metadata['duration_seconds']:.3f}s != {expected:.3f}s "
+                    f"(tolerance {tolerance:.3f}s)"
+                )
+            metadata.update(
+                {
+                    "playback_speed": args.playback_speed,
+                    "expected_duration_seconds": expected,
+                }
+            )
+            export_metadata.append(metadata)
+            poster = exports / f"{video.stem}_poster.webp"
+            _extract_image(
+                ffmpeg,
+                video,
+                poster,
+                metadata["duration_seconds"] * poster_fractions[video.name],
+                webp=True,
+            )
+            posters.append(poster)
+
+        captions = build_portfolio_captions(
+            final_results,
+            selections,
+            playback_speed=args.playback_speed,
+        )
+        caption_paths = []
+        for filename, markdown in captions.items():
+            path = exports / filename
+            path.write_text(markdown.rstrip() + "\n", encoding="utf-8")
+            caption_paths.append(path)
+
+        webm_outputs = []
+        if args.webm:
+            for video in videos:
+                webm = exports / f"{video.stem}.webm"
+                _transcode_webm(ffmpeg, video, webm)
+                webm_outputs.append(webm)
+
+        checksum_members = [*videos, *posters, *caption_paths, *webm_outputs]
+        checksums_path = exports / "checksums.sha256"
+        checksums_path.write_text(
+            "".join(
+                f"{sha256_file(path)}  {path.name}\n"
+                for path in sorted(checksum_members, key=lambda item: item.name)
+            ),
+            encoding="utf-8",
+        )
+
+        destination = output_directory / "exports"
+        destination_metadata = []
+        for metadata in export_metadata:
+            item = dict(metadata)
+            item["path"] = str(destination / Path(metadata["path"]).name)
+            item["poster"] = str(
+                destination / f"{Path(metadata['path']).stem}_poster.webp"
+            )
+            item["caption"] = str(destination / f"{Path(metadata['path']).stem}.md")
+            destination_metadata.append(item)
+
+        _replace_exports_transactionally(exports, destination)
+
+    total_export_size_bytes = sum(item["size_bytes"] for item in destination_metadata)
+    state.update(
+        {
+            "status": "complete",
+            "finished_at": datetime.now().astimezone().isoformat(),
+            "presentation_revision": 2,
+            "composition_mode": composition_mode,
+            "playback_speed": args.playback_speed,
+            "final_hold_seconds": final_hold,
+            "phases": [
+                *[
+                    phase
+                    for phase in state.get("phases", [])
+                    if phase
+                    not in {
+                        "annotation",
+                        "composition",
+                        "poster_generation",
+                        "technical_validation",
+                        "markdown_captions",
+                    }
+                ],
+                "composition",
+                "poster_generation",
+                "markdown_captions",
+                "technical_validation",
+            ],
+            "exports": destination_metadata,
+            "total_mp4_size_bytes": total_export_size_bytes,
+            "total_mp4_size_target_bytes": 40 * 1024 * 1024,
+            "total_mp4_size_warning": total_export_size_bytes > 40 * 1024 * 1024,
+            "posters": [
+                str(output_directory / "exports" / path.name) for path in posters
+            ],
+            "captions": [
+                str(output_directory / "exports" / path.name) for path in caption_paths
+            ],
+            "webm_exports": [
+                str(output_directory / "exports" / path.name) for path in webm_outputs
+            ],
+            "checksums": str(output_directory / "exports" / checksums_path.name),
+            "composition_git": _git_metadata(),
+            "composition_software": {
+                "python": sys.version,
+                "opencv": _installed_version("opencv-python-headless", "opencv-python"),
+                "pillow": _installed_version("Pillow"),
+                "ffmpeg": _executable_version(ffmpeg),
+                "ffprobe": _executable_version(ffprobe),
+            },
+        }
+    )
+    state.pop("annotations", None)
+    state.pop("camera_contact_sheet", None)
+    write_json(output_directory / "manifest.json", state)
+
+    print("\n[DICE PORTFOLIO] Presentation revision 2 complete", flush=True)
+    for metadata in destination_metadata:
+        print(
+            f"  {metadata['path']}  {metadata['duration_seconds']:.2f}s  "
+            f"{metadata['size_bytes'] / (1024 * 1024):.2f} MiB",
+            flush=True,
+        )
+    print(
+        f"[DICE PORTFOLIO] Playback: {args.playback_speed:g}× at {args.export_fps} FPS",
+        flush=True,
+    )
+    print(f"[DICE PORTFOLIO] Transfer this directory: {output_directory / 'exports'}")
+    return state
 
 
 def main():
     args = parse_args()
     ffmpeg = _resolve_executable(args.ffmpeg, "ffmpeg")
     ffprobe = _resolve_executable(args.ffprobe, "ffprobe")
-    _verify_video_toolchain(ffmpeg, args.webm)
+    _verify_video_toolchain(
+        ffmpeg,
+        args.webm,
+        capture_required=not args.compose_only,
+    )
     run_directory = resolve_run_directory(args.run, args.outputs_root)
     checkpoint = Path(args.checkpoint).expanduser()
     if not checkpoint.is_absolute():
@@ -594,11 +995,46 @@ def main():
     if not checkpoint.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
     final_results, final_results_source = _load_final_results(run_directory, checkpoint)
-    adverse_selection_target = _adverse_selection_target(final_results_source)
 
     output_root = Path(args.output_root).expanduser().resolve()
     output_directory = output_root / f"{run_directory.name}_{checkpoint.stem}"
     expected_name = f"{run_directory.name}_{checkpoint.stem}"
+    if args.compose_only:
+        state_path = output_directory / "manifest.json"
+        if not state_path.is_file():
+            raise FileNotFoundError(
+                f"Composition-only mode requires an existing manifest: {state_path}"
+            )
+        state = read_json(state_path)
+        if state.get("status") != "complete":
+            raise ValueError(f"Existing portfolio is not complete: {state_path}")
+        if state.get("checkpoint_sha256") != sha256_file(checkpoint):
+            raise ValueError(
+                "Existing portfolio checkpoint does not match --checkpoint"
+            )
+        if tuple(state.get("resolution", ())) != tuple(args.resolution_tuple):
+            raise ValueError(
+                "Composition resolution must match the completed captures: "
+                f"{state.get('resolution')} != {list(args.resolution_tuple)}"
+            )
+        if int(state.get("raw_fps", 0)) != args.raw_fps:
+            raise ValueError(
+                "--raw-fps must match the completed captures: "
+                f"{state.get('raw_fps')} != {args.raw_fps}"
+            )
+        state["recomposed_at"] = datetime.now().astimezone().isoformat()
+        _compose_public_package(
+            args,
+            ffmpeg,
+            ffprobe,
+            output_directory,
+            state,
+            final_results,
+            composition_mode="compose_only",
+        )
+        return
+
+    adverse_selection_target = _adverse_selection_target(final_results_source)
     if output_directory.exists():
         if not args.force:
             raise FileExistsError(
@@ -754,378 +1190,17 @@ def main():
         state["phases"].append("camera_capture")
         write_json(state_path, state)
 
-        intermediate = output_directory / "intermediate"
-        intermediate.mkdir()
-        annotations = {
-            "nominal_hero_minimal": _run_annotation(
-                args,
-                ffmpeg,
-                captures["nominal_hero"],
-                intermediate / "nominal_hero_minimal.mp4",
-                "minimal",
-                0.75,
-            ),
-            "nominal_hero_technical": _run_annotation(
-                args,
-                ffmpeg,
-                captures["nominal_hero"],
-                intermediate / "nominal_hero_technical.mp4",
-                "technical",
-                0.35,
-            ),
-            "nominal_top_technical": _run_annotation(
-                args,
-                ffmpeg,
-                captures["nominal_top"],
-                intermediate / "nominal_top_technical.mp4",
-                "technical",
-                0.35,
-            ),
-            "nominal_side_technical": _run_annotation(
-                args,
-                ffmpeg,
-                captures["nominal_side"],
-                intermediate / "nominal_side_technical.mp4",
-                "technical",
-                0.35,
-            ),
-            "robust_hero": _run_annotation(
-                args,
-                ffmpeg,
-                captures["robust_hero"],
-                intermediate / "robust_hero.mp4",
-                "stress",
-                0.35,
-            ),
-            "adverse_hero": _run_annotation(
-                args,
-                ffmpeg,
-                captures["adverse_hero"],
-                intermediate / "adverse_hero.mp4",
-                "stress",
-                0.75,
-            ),
-            "adverse_side": _run_annotation(
-                args,
-                ffmpeg,
-                captures["adverse_side"],
-                intermediate / "adverse_side.mp4",
-                "stress",
-                0.75,
-            ),
-        }
-        state["annotations"] = {key: str(value) for key, value in annotations.items()}
-        state["phases"].append("annotation")
-        write_json(state_path, state)
-
-        nominal_result = final_results["nominal"]
-        robust_result = final_results["robust"]
-        adverse_result = final_results["adverse"]
-        nominal_success = 100.0 * _result_value(
-            nominal_result, "issued_command_completion_rate"
-        )
-        nominal_mean_commands = _result_value(
-            nominal_result, "mean_consecutive_commands"
-        )
-        nominal_episodes = int(_result_value(nominal_result, "episodes"))
-        robust_episodes = int(_result_value(robust_result, "episodes"))
-        adverse_episodes = int(_result_value(adverse_result, "episodes"))
-        episode_counts = {nominal_episodes, robust_episodes, adverse_episodes}
-        evaluation_eyebrow = (
-            f"{nominal_episodes:,} EPISODES PER CONDITION"
-            if len(episode_counts) == 1
-            else "FINAL QUANTITATIVE EVALUATION"
-        )
-        adverse_drops = round(
-            adverse_episodes * _result_value(adverse_result, "drop_rate")
-        )
-        cards = output_directory / "cards"
-        hero_card = _create_card(
-            cards / "hero.png",
-            args.resolution_tuple,
-            "DICE",
-            "Command-conditioned in-hand reorientation",
-            ["20-DoF Shadow Hand", "One policy  |  six semantic face commands"],
-        )
-        explainer_card = _create_card(
-            cards / "explainer.png",
-            args.resolution_tuple,
-            "TASK",
-            "Place the requested numbered face upward",
-            ["Rotate  |  stabilize  |  hold all gates for 20 control steps"],
-            accent=(68, 196, 224),
-        )
-        explainer_outro = _create_card(
-            cards / "explainer_outro.png",
-            args.resolution_tuple,
-            "FINAL NOMINAL RESULT",
-            f"{nominal_success:.2f}% issued-command completion",
-            [
-                f"{nominal_mean_commands:.3f} mean commands / episode",
-                f"{100.0 * _result_value(nominal_result, 'drop_rate'):.2f}% "
-                f"episode drop rate  |  n = {nominal_episodes:,}",
-            ],
-        )
-        hold_replay_card = _create_card(
-            cards / "hold_replay.png",
-            args.resolution_tuple,
-            "0.5x REPLAY",
-            "Alignment and hold confirmation",
-            ["The command changes only after 20 consecutive valid steps"],
-            accent=(68, 196, 224),
-        )
-
-        nominal_drop = 100.0 * _result_value(nominal_result, "drop_rate")
-        robust_drop = 100.0 * _result_value(robust_result, "drop_rate")
-        adverse_drop = 100.0 * _result_value(adverse_result, "drop_rate")
-        stress_card = _create_card(
-            cards / "stress.png",
-            args.resolution_tuple,
-            evaluation_eyebrow,
-            "Robustness and the failure boundary",
-            [
-                f"Nominal {nominal_drop:.1f}% drops  |  +/-20% physics {robust_drop:.1f}%",
-                f"Adverse 1.5x mass / 0.7 friction {adverse_drop:.1f}% drops",
-            ],
-            accent=(242, 89, 89),
-        )
-        slip_replay_card = _create_card(
-            cards / "slip_replay.png",
-            args.resolution_tuple,
-            "0.5x REPLAY",
-            "The adverse retention failure",
-            ["Heavier object  |  lower tangential contact margin"],
-            accent=(242, 89, 89),
-        )
-        stress_outro = _create_card(
-            cards / "stress_outro.png",
-            args.resolution_tuple,
-            "REPRESENTATIVE ROLLOUT",
-            "Semantic targeting remains strong",
-            [
-                "Long-horizon grasp retention degrades under the adverse corner",
-                f"Aggregate result: {adverse_drops:,} / {adverse_episodes:,} "
-                "episodes dropped",
-            ],
-            accent=(242, 89, 89),
-        )
-
-        nominal_duration = float(selections["nominal"]["duration_seconds"])
-        robust_duration = float(selections["robust"]["duration_seconds"])
-        adverse_duration = float(selections["adverse"]["duration_seconds"])
-        success_times = _success_times(selections["nominal"]["metrics"])
-        if len(success_times) < 6:
-            raise RuntimeError(
-                "Selected nominal trajectory has fewer than six success events"
-            )
-        cut_two = success_times[1]
-        cut_four = success_times[3]
-        replay_end = min(nominal_duration, success_times[4] + 0.20)
-        replay_start = max(0.0, replay_end - 1.10)
-
-        comparison = _side_by_side(
+        _compose_public_package(
+            args,
             ffmpeg,
-            annotations["nominal_hero_technical"],
-            annotations["robust_hero"],
-            intermediate / "nominal_vs_robust.mp4",
-            min(6.0, nominal_duration, robust_duration),
-            args.resolution_tuple,
-            args.export_fps,
+            ffprobe,
+            output_directory,
+            state,
+            final_results,
+            composition_mode="full_capture",
         )
+        return
 
-        exports = output_directory / "exports"
-        exports.mkdir()
-        hero = _compose_sequence(
-            ffmpeg,
-            [
-                {"type": "image", "path": hero_card, "duration": 1.20},
-                {"type": "video", "path": annotations["nominal_hero_minimal"]},
-            ],
-            exports / "dice_hero.mp4",
-            args.resolution_tuple,
-            args.export_fps,
-        )
-        explainer = _compose_sequence(
-            ffmpeg,
-            [
-                {"type": "image", "path": explainer_card, "duration": 2.50},
-                {
-                    "type": "video",
-                    "path": annotations["nominal_hero_technical"],
-                    "start": 0.0,
-                    "end": cut_two,
-                },
-                {
-                    "type": "video",
-                    "path": annotations["nominal_top_technical"],
-                    "start": cut_two,
-                    "end": cut_four,
-                },
-                {
-                    "type": "video",
-                    "path": annotations["nominal_side_technical"],
-                    "start": cut_four,
-                    "end": nominal_duration,
-                },
-                {"type": "image", "path": hold_replay_card, "duration": 0.80},
-                {
-                    "type": "video",
-                    "path": annotations["nominal_side_technical"],
-                    "start": replay_start,
-                    "end": replay_end,
-                    "speed": 0.5,
-                },
-                {"type": "image", "path": explainer_outro, "duration": 3.50},
-            ],
-            exports / "dice_task_explainer.mp4",
-            args.resolution_tuple,
-            args.export_fps,
-        )
-        stress = _compose_sequence(
-            ffmpeg,
-            [
-                {"type": "image", "path": stress_card, "duration": 3.50},
-                {"type": "video", "path": comparison},
-                {
-                    "type": "video",
-                    "path": annotations["adverse_hero"],
-                    "start": 0.0,
-                    "end": adverse_duration,
-                },
-                {"type": "image", "path": slip_replay_card, "duration": 0.80},
-                {
-                    "type": "video",
-                    "path": annotations["adverse_side"],
-                    "start": max(0.0, adverse_duration - 2.0),
-                    "end": adverse_duration,
-                    "speed": 0.5,
-                },
-                {"type": "image", "path": stress_outro, "duration": 4.00},
-            ],
-            exports / "dice_robustness_boundary.mp4",
-            args.resolution_tuple,
-            args.export_fps,
-        )
-
-        export_videos = [hero, explainer, stress]
-        preferred_poster_times = {
-            hero: 2.0,
-            explainer: 4.0,
-            stress: 5.0,
-        }
-        posters = []
-        for video in export_videos:
-            poster = video.with_name(video.stem + "_poster.webp")
-            probe = probe_portfolio_video(
-                ffprobe,
-                video,
-                args.resolution_tuple,
-                args.export_fps,
-            )
-            _extract_image(
-                ffmpeg,
-                video,
-                poster,
-                min(
-                    preferred_poster_times[video],
-                    max(0.0, probe["duration_seconds"] - 0.10),
-                ),
-                webp=True,
-            )
-            posters.append(poster)
-
-        contact_images = []
-        for camera, annotated_key in (
-            ("hero", "nominal_hero_technical"),
-            ("top", "nominal_top_technical"),
-            ("side", "nominal_side_technical"),
-        ):
-            image_path = intermediate / f"contact_{camera}.png"
-            _extract_image(
-                ffmpeg,
-                annotations[annotated_key],
-                image_path,
-                nominal_duration * 0.5,
-            )
-            contact_images.append(image_path)
-        contact_sheet = _create_contact_sheet(
-            contact_images,
-            ["HERO OBLIQUE", "TOP DIAGNOSTIC", "SIDE CONTACT"],
-            exports / "camera_contact_sheet.webp",
-        )
-
-        webm_outputs = []
-        if args.webm:
-            for video in export_videos:
-                webm = video.with_suffix(".webm")
-                _transcode_webm(ffmpeg, video, webm)
-                webm_outputs.append(webm)
-
-        export_metadata = [
-            probe_portfolio_video(
-                ffprobe,
-                video,
-                args.resolution_tuple,
-                args.export_fps,
-            )
-            for video in export_videos
-        ]
-        total_export_size_bytes = sum(item["size_bytes"] for item in export_metadata)
-        package_size_warning = total_export_size_bytes > 40 * 1024 * 1024
-        checksum_paths = [*export_videos, *posters, contact_sheet, *webm_outputs]
-        checksums_path = exports / "checksums.sha256"
-        checksums_path.write_text(
-            "".join(
-                f"{sha256_file(path)}  {path.name}\n"
-                for path in sorted(checksum_paths, key=lambda item: item.name)
-            ),
-            encoding="utf-8",
-        )
-
-        state.update(
-            {
-                "status": "complete",
-                "finished_at": datetime.now().astimezone().isoformat(),
-                "phases": [
-                    *state["phases"],
-                    "composition",
-                    "poster_generation",
-                    "technical_validation",
-                ],
-                "final_results_source": str(final_results_source),
-                "exports": export_metadata,
-                "total_mp4_size_bytes": total_export_size_bytes,
-                "total_mp4_size_target_bytes": 40 * 1024 * 1024,
-                "total_mp4_size_warning": package_size_warning,
-                "posters": [str(path) for path in posters],
-                "camera_contact_sheet": str(contact_sheet),
-                "webm_exports": [str(path) for path in webm_outputs],
-                "checksums": str(checksums_path),
-            }
-        )
-        write_json(state_path, state)
-
-        print("\n[DICE PORTFOLIO] Complete", flush=True)
-        for metadata in export_metadata:
-            print(
-                f"  {metadata['path']}  "
-                f"{metadata['duration_seconds']:.2f}s  "
-                f"{metadata['size_bytes'] / (1024 * 1024):.2f} MiB",
-                flush=True,
-            )
-        print(
-            "[DICE PORTFOLIO] Total MP4 payload: "
-            f"{total_export_size_bytes / (1024 * 1024):.2f} MiB",
-            flush=True,
-        )
-        if package_size_warning:
-            print(
-                "[DICE PORTFOLIO] Warning: total MP4 payload exceeds the "
-                "40 MiB portfolio target; consider a higher final CRF.",
-                flush=True,
-            )
-        print(f"[DICE PORTFOLIO] Transfer this directory: {exports}", flush=True)
-        print(f"[DICE PORTFOLIO] Manifest: {state_path}", flush=True)
     except BaseException as exc:
         state.update(
             {

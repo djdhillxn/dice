@@ -106,7 +106,12 @@ def _annotate_frame(
     condition_label,
     style,
     fonts,
+    playback_speed=1.0,
+    view_labels=(),
 ):
+    if style == "none":
+        return frame
+
     height, width = frame.shape[:2]
     scale = height / 1080.0
     margin = round(48 * scale)
@@ -156,10 +161,13 @@ def _annotate_frame(
         margin + panel_height,
     )
     _panel(draw, condition_box, radius)
+    displayed_condition = condition_label
+    if playback_speed != 1.0:
+        displayed_condition += f"  ·  {playback_speed:g}x PLAYBACK"
     _text(
         draw,
         (condition_box[0] + round(22 * scale), condition_box[1] + round(20 * scale)),
-        condition_label,
+        displayed_condition,
         fonts["small_bold"],
         fill=(176, 185, 198, 255),
     )
@@ -170,6 +178,30 @@ def _annotate_frame(
         fonts["body_bold"],
         fill=STATUS_COLORS.get(status, STATUS_COLORS["rotating"]),
     )
+
+    # Camera labels describe synchronized panels without duplicating the HUD.
+    if view_labels:
+        label_y = margin + panel_height + round(18 * scale)
+        panel_width = width / len(view_labels)
+        chip_height = round(48 * scale)
+        chip_width = round(210 * scale)
+        for index, label in enumerate(view_labels):
+            center_x = round((index + 0.5) * panel_width)
+            chip_box = (
+                center_x - chip_width // 2,
+                label_y,
+                center_x + chip_width // 2,
+                label_y + chip_height,
+            )
+            _panel(draw, chip_box, round(12 * scale), fill=(15, 20, 28, 190))
+            _text(
+                draw,
+                (center_x, label_y + chip_height // 2),
+                label.upper(),
+                fonts["small_bold"],
+                fill=(226, 232, 240, 255),
+                anchor="mm",
+            )
 
     # Bottom diagnostic strip. The hero remains intentionally sparse.
     bottom_height = round((104 if style == "minimal" else 154) * scale)
@@ -252,6 +284,8 @@ def annotate_video(
     output_fps=30,
     crf=16,
     post_roll_seconds=0.75,
+    playback_speed=1.0,
+    view_labels=(),
     font_path=None,
     ffmpeg_path="ffmpeg",
 ):
@@ -331,7 +365,7 @@ def annotate_video(
         "-i",
         "-",
         "-vf",
-        f"fps={output_fps}",
+        f"setpts=(PTS-STARTPTS)/{playback_speed:.8f},fps={output_fps}",
         "-an",
         "-c:v",
         "libx264",
@@ -368,6 +402,8 @@ def annotate_video(
                 condition_label,
                 style,
                 fonts,
+                playback_speed,
+                view_labels,
             )
             process.stdin.write(annotated.tobytes())
             last_source_frame = frame
@@ -392,12 +428,17 @@ def annotate_video(
                 condition_label,
                 style,
                 fonts,
+                playback_speed,
+                view_labels,
             )
             process.stdin.write(annotated.tobytes())
             last_frame = annotated
             synthesized_terminal_frames += 1
 
-        for _ in range(round(post_roll_seconds * raw_fps)):
+        # This many source-rate frames becomes the requested presentation hold
+        # after the setpts playback-speed transform.
+        post_roll_source_frames = round(post_roll_seconds * raw_fps * playback_speed)
+        for _ in range(post_roll_source_frames):
             process.stdin.write(last_frame.tobytes())
     except Exception:
         if process.stdin is not None and not process.stdin.closed:
@@ -427,6 +468,8 @@ def annotate_video(
         "input_resolution": [width, height],
         "input_fps": raw_fps,
         "output_fps": output_fps,
+        "playback_speed": playback_speed,
+        "view_labels": list(view_labels),
         "advertised_frames": advertised_frames,
         "decodable_frames": decodable_frames,
         "decoded_frames": decoded_frames,
@@ -461,11 +504,20 @@ def parse_args():
     parser.add_argument("--initial-metrics", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument(
-        "--style", choices=("minimal", "technical", "stress"), default="technical"
+        "--style",
+        choices=("none", "minimal", "technical", "stress"),
+        default="technical",
     )
     parser.add_argument("--output-fps", type=int, default=30)
     parser.add_argument("--crf", type=int, default=16)
     parser.add_argument("--post-roll-seconds", type=float, default=0.75)
+    parser.add_argument("--playback-speed", type=float, default=1.0)
+    parser.add_argument(
+        "--view-label",
+        action="append",
+        default=[],
+        help="Camera label; repeat once per synchronized view.",
+    )
     parser.add_argument("--font", default=None)
     parser.add_argument("--ffmpeg", default="ffmpeg")
     values = parser.parse_args()
@@ -475,6 +527,8 @@ def parse_args():
         parser.error("--crf must be between 0 and 51")
     if values.post_roll_seconds < 0:
         parser.error("--post-roll-seconds must be non-negative")
+    if values.playback_speed <= 0:
+        parser.error("--playback-speed must be positive")
     return values
 
 
@@ -490,6 +544,8 @@ if __name__ == "__main__":
         output_fps=cli.output_fps,
         crf=cli.crf,
         post_roll_seconds=cli.post_roll_seconds,
+        playback_speed=cli.playback_speed,
+        view_labels=tuple(cli.view_label),
         font_path=cli.font,
         ffmpeg_path=cli.ffmpeg,
     )

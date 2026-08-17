@@ -12,11 +12,14 @@ from dicedial.portfolio_video import (
     PRESENTATION_COLLISION_EXTENT_M,
     PRESENTATION_MASS_KG,
     align_video_telemetry,
+    build_portfolio_captions,
     compare_metric_traces,
     compare_physics_snapshots,
     parse_resolution,
     parse_seed_spec,
+    presentation_duration,
     probe_portfolio_video,
+    resolve_portfolio_artifact,
     select_representative_scout,
 )
 
@@ -80,6 +83,55 @@ def _write_trace(path, alignment_offset=0.0, event_override=None):
 
 
 class TestPortfolioVideo(unittest.TestCase):
+    def test_presentation_timing_artifact_rebase_and_markdown_captions(self):
+        self.assertAlmostEqual(presentation_duration(4.25), 9.25)
+        with self.assertRaises(ValueError):
+            presentation_duration(4.25, playback_speed=0.0)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "copied_portfolio"
+            artifact = output / "captures" / "nominal" / "metrics.csv"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("metrics\n", encoding="utf-8")
+            recorded = Path(
+                "/remote/videos/copied_portfolio/captures/nominal/metrics.csv"
+            )
+            self.assertEqual(
+                resolve_portfolio_artifact(recorded, output),
+                artifact.resolve(),
+            )
+
+        final_results = {
+            condition: {
+                "episodes": 1_000,
+                "issued_command_completion_rate": success,
+                "drop_rate": drop,
+                "mean_consecutive_commands": commands,
+            }
+            for condition, success, drop, commands in (
+                ("nominal", 0.97, 0.09, 33.0),
+                ("robust", 0.96, 0.10, 31.0),
+                ("adverse", 0.95, 0.45, 23.0),
+            )
+        }
+        selections = {
+            "nominal": {"seed": 10, "commands_completed": 6, "duration_seconds": 4.27},
+            "robust": {"seed": 18, "commands_completed": 6, "duration_seconds": 4.65},
+            "adverse": {"seed": 9, "commands_completed": 10, "duration_seconds": 8.07},
+        }
+        captions = build_portfolio_captions(final_results, selections)
+        self.assertEqual(
+            set(captions),
+            {
+                "dice_nominal_success.md",
+                "dice_physics_variation.md",
+                "dice_adverse_boundary.md",
+            },
+        )
+        self.assertIn("0.5× playback", captions["dice_nominal_success.md"])
+        self.assertIn("seed 9", captions["dice_adverse_boundary.md"])
+        self.assertIn("45.00%", captions["dice_adverse_boundary.md"])
+
     def test_probe_returns_video_metadata_after_faststart_file_check(self):
         payload = {
             "streams": [

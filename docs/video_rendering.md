@@ -1,26 +1,32 @@
 # DICE portfolio video rendering
 
-## Deliverables
+## Public deliverables
 
-One completed training run produces exactly three public-facing videos:
+One completed training run produces exactly three presentation videos. Each
+video has a same-named Markdown companion so the web page can render its own
+HTML/CSS title, explanation, and quantitative caption.
 
-| Export | Purpose | Content |
+| Export | Evidence shown | Views |
 |---|---|---|
-| `dice_hero.mp4` | Muted portfolio hero | Representative nominal six-face sequence with a minimal HUD |
-| `dice_task_explainer.mp4` | Technical explanation | The same nominal trajectory from oblique, top, and side views, including a labeled half-speed hold replay |
-| `dice_robustness_boundary.mp4` | Robustness and negative result | Nominal-versus-symmetric comparison followed by a representative adverse drop and labeled half-speed replay |
+| `dice_nominal_success.mp4` | A representative six-command nominal rollout | Synchronized oblique and top-down views |
+| `dice_physics_variation.mp4` | Nominal behavior beside a held-out ±20% mass/friction rollout | Full-height oblique views |
+| `dice_adverse_boundary.mp4` | A representative heavy, slippery rollout through its eventual drop | Synchronized oblique and side-contact views |
 
-Every export is 1920x1080, 30 FPS, H.264, `yuv420p`, silent, and
-fast-start optimized. The package also contains one WebP poster per video, a
-three-camera contact sheet, SHA-256 checksums, and a complete rendering
-manifest. Optional VP9 WebM derivatives can be requested with `--webm`.
-Each MP4 is hard-limited to 50 MiB, and the manifest warns when their combined
-payload exceeds the 40 MiB portfolio target.
+All policy footage is presented at **0.5× real-time simulation speed**. Raw
+captures remain 60 FPS; the exports are 30 FPS and retain the source frames,
+so the slower presentation exposes finger motion instead of merely lowering
+the frame rate. A 0.75-second terminal hold makes a confirmed face or drop
+readable. Every MP4 is silent H.264, 1920x1080, `yuv420p`, and fast-start
+optimized.
+
+The public package also contains one footage-derived WebP poster and one
+Markdown caption per video, SHA-256 checksums, and optional VP9 WebM
+derivatives. It contains no rendered title/result cards and no contact sheet.
+The page that embeds the assets owns the surrounding typography and layout.
 
 ## GCP preparation
 
-Activate the same environment used for training and install the presentation
-extra:
+Activate the training environment and install the presentation extra:
 
 ```bash
 conda activate dice
@@ -28,27 +34,26 @@ cd ~/projects/dice
 python -m pip install -e ".[video]"
 ```
 
-The coordinator requires the system `ffmpeg` and `ffprobe` executables, an
-H.264 encoder, and DejaVu fonts:
+The coordinator requires `ffmpeg`, `ffprobe`, an H.264 encoder, and DejaVu
+fonts. Pillow supplies WebP poster encoding:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-ffmpeg -hide_banner -encoders | grep -E 'libx264|libwebp|libvpx-vp9'
+ffmpeg -hide_banner -encoders | grep -E 'libx264|libvpx-vp9'
 ffprobe -version
 ```
 
-OpenCV remains pinned to the Isaac Sim-compatible wheel in `pyproject.toml`.
-Gymnasium uses MoviePy for the raw capture; the pipeline uses Pillow for
-anti-aliased HUD text and FFmpeg for the final browser-compatible encoding. It
-does not use OpenCV's `mp4v` writer. The coordinator checks the Python modules
-and required FFmpeg encoders before launching Isaac Sim.
+OpenCV remains pinned to the Isaac Sim-compatible headless wheel in
+`pyproject.toml`. Gymnasium and MoviePy create raw captures, Pillow draws the
+dynamic HUD/legends, and FFmpeg performs the browser-compatible composition.
 
-## One-command render
+## First capture and composition
 
-Pass the timestamped run ID below `outputs/`. `model_4000.pt` is the default
-checkpoint, and rendering is headless by default:
+Pass the timestamped run ID below `outputs/`. `model_4000.pt`, headless mode,
+1920x1080 raw capture, 60 raw FPS, 30 export FPS, and 0.5× playback are the
+defaults:
 
 ```bash
 python -u scripts/render_portfolio_videos.py \
@@ -64,49 +69,69 @@ python -u scripts/render_portfolio_videos.py \
   --device cuda:0 \
   --resolution 1920x1080 \
   --raw-fps 60 \
-  --export-fps 30
+  --export-fps 30 \
+  --playback-speed 0.5
 ```
 
-Add `--webm` to create VP9 alternatives. Add `--show-ui` only when rendering
-on a machine with an interactive display. A completed output is never silently
-overwritten; `--force` replaces only the resolved directory for this exact
-run/checkpoint pair.
+Add `--webm` for VP9 copies and `--show-ui` only on a machine with an
+interactive display. A complete run/checkpoint directory is never silently
+overwritten; full recapture requires `--force` and replaces that resolved
+portfolio directory.
 
-## What the coordinator does
+## Recompose existing captures without Isaac Sim
 
-1. Resolves the timestamped run and verifies the selected checkpoint plus its
-   matching completed final-evaluation SHA-256.
-2. Captures the repository commit, software versions, and checkpoint SHA-256.
-3. Requires readable PhysX mass/inertia tensors, then compares the stock
-   evaluation cube and numbered presentation die with a 2% relative tolerance
-   and a `1e-8` absolute numerical floor.
-4. Runs no-camera scouts for fixed seed sets:
-   - nominal: seeds 7 through 11
-   - symmetric variation: seeds 17 through 21
-   - adverse: seeds 7 through 22
-5. Selects the successful nominal and symmetric rollouts closest to the median
-   six-command completion time.
-6. Derives the median completed-command count and time-to-drop directly from
-   the final adverse `episodes.csv`, then selects the closest dropped scout.
-   For the completed `model_4000.pt` evaluation, those targets are nine
-   commands and 7.28 seconds.
-7. Saves the selected raw 20-dimensional action trajectories.
-8. Replays the nominal trajectory from hero, top, and side cameras; the robust
-   trajectory from the hero camera; and the adverse trajectory from hero and
-   side cameras.
-9. Requires exact command/success/drop event agreement and at most `1e-4`
-   alignment, position, and hold-progress disagreement between scouting and
-   rendered replays.
-10. Applies the synchronized HUD, builds title/result cards, composes the three
-    final stories, generates posters and the camera contact sheet, and writes
-    checksums.
-11. Uses `ffprobe` to require one silent H.264 stream, `yuv420p`, 1920x1080,
-    30 FPS, metadata before media data for progressive loading, and less than
-    50 MiB per MP4.
+After pulling these code changes onto GCP, reuse the already completed scouts,
+trajectories, telemetry, and camera captures:
 
-The process launches Isaac Sim sequentially for scouting and camera capture.
-That is intentional: a single L4 renders one 1080p viewport at a time, avoiding
-the memory and transfer cost of simultaneous camera render products.
+```bash
+python -u scripts/render_portfolio_videos.py \
+  2026-08-16_11-22-43_angular_bound_pilot_gurgaon \
+  --compose-only \
+  --force
+```
+
+Composition-only mode does **not** start Isaac Sim, scout new seeds, or rerun
+the policy. It verifies the existing manifest, checkpoint identity, capture
+paths, resolution, FPS, and synchronized traces; stages all three new exports;
+probes their technical contracts; and only then atomically replaces
+`exports/`. If composition fails, the previous public package remains in
+place. It can also rebase absolute GCP artifact paths after the complete
+portfolio directory has been copied to another machine.
+
+Legacy `cards/` or `intermediate/` directories from an earlier completed render
+may remain as private provenance, but presentation revision 2 neither reads
+nor publishes them. A fresh full render does not create static cards.
+
+## Selection and evidence contract
+
+The full coordinator:
+
+1. Resolves the run and requires the matching completed final-evaluation
+   checkpoint SHA-256.
+2. Records repository and software provenance.
+3. Audits the numbered presentation die against the stock evaluation cube,
+   requiring matching mass and inertia within the declared tolerance.
+4. Scouts fixed seed sets without cameras: nominal 7–11, symmetric variation
+   17–21, and adverse 7–22.
+5. Selects successful nominal and variation rollouts nearest their median
+   six-command completion time—not the fastest or most flattering sample.
+6. Derives the median failure commands/time from adverse evaluation episodes
+   and selects the closest dropped scout.
+7. Replays each selected 20-dimensional action trajectory through the required
+   fixed camera views.
+8. Requires exact command/success/drop event agreement and tight numeric trace
+   agreement between scout and render replay.
+9. Composes full-height center crops, one shared telemetry HUD for synchronized
+   views, 0.5× playback, footage-derived posters, and Markdown captions.
+10. Uses `ffprobe` to enforce codec, pixel format, dimensions, FPS, progressive
+    loading, duration, and file-size contracts before installing exports.
+
+The nominal oblique/top and adverse oblique/side panels are the same trajectory
+and simulation ticks. The nominal/variation comparison intentionally shows two
+separately selected median-like rollouts; it is a behavioral comparison, not a
+claim of frame-identical physics counterfactuals. Aggregate 1,000-episode
+evaluation values in the Markdown companions remain the generalization
+evidence.
 
 ## Presentation conditions
 
@@ -116,15 +141,12 @@ the memory and transfer cost of simultaneous camera render products.
 | Symmetric variation | `DICE-Shadow-Play-Robust-v0` | Same cycle | Six confirmed commands, drop, or 40 s |
 | Adverse | `DICE-Shadow-Play-Adverse-v0` | Repeating cycle | Drop or the 24 s evaluation horizon |
 
-All three use one numbered die and one deterministic policy. The symmetric
-condition samples object mass and material coefficients within `[0.8, 1.2]` of
-nominal. The adverse condition fixes object mass at `1.5x` and static/dynamic
-object friction at `0.7`.
-
-Presentation environments defer only the final internal simulator reset. This
-preserves the sixth confirmed hold or dropped state for the final captured
-frame. Training and quantitative evaluation retain Isaac Lab's normal
-automatic reset behavior.
+All conditions use the same frozen deterministic policy and numbered die. The
+symmetric condition samples object mass and physically consistent static and
+dynamic friction within `[0.8, 1.2]` of nominal. The adverse condition fixes
+mass at 1.5× and both friction coefficients at 0.7×. Presentation environments
+defer only the final internal reset so the terminal confirmation or drop remains
+visible; training and quantitative evaluation retain normal automatic resets.
 
 ## Output layout
 
@@ -132,33 +154,22 @@ automatic reset behavior.
 videos/<timestamped-run>_model_4000/
 ├── manifest.json
 ├── audit/
-│   ├── stock/
-│   ├── numbered/
-│   ├── physics_snapshots.json
-│   └── physics_audit.json
 ├── scout/<condition>/seed_<seed>/
-│   ├── trajectory.npz
-│   ├── metrics.csv
-│   └── capture_summary.json
 ├── captures/<condition>/seed_<seed>/<camera>/
-│   ├── raw/*.mp4
-│   ├── metrics.csv
-│   ├── initial_metrics.json
-│   └── capture_summary.json
-├── cards/
-├── intermediate/
 └── exports/
-    ├── dice_hero.mp4
-    ├── dice_hero_poster.webp
-    ├── dice_task_explainer.mp4
-    ├── dice_task_explainer_poster.webp
-    ├── dice_robustness_boundary.mp4
-    ├── dice_robustness_boundary_poster.webp
-    ├── camera_contact_sheet.webp
+    ├── dice_nominal_success.mp4
+    ├── dice_nominal_success.md
+    ├── dice_nominal_success_poster.webp
+    ├── dice_physics_variation.mp4
+    ├── dice_physics_variation.md
+    ├── dice_physics_variation_poster.webp
+    ├── dice_adverse_boundary.mp4
+    ├── dice_adverse_boundary.md
+    ├── dice_adverse_boundary_poster.webp
     └── checksums.sha256
 ```
 
-`videos/` remains ignored by Git. Transfer only the compact public package and
+`videos/` remains ignored by Git. Transfer the compact public package plus its
 manifest from GCP:
 
 ```bash
@@ -171,36 +182,38 @@ scp \
   ./dice-portfolio-exports/
 ```
 
-Raw captures and intermediate files should not be committed or copied into the
-GitHub Pages repository.
+Raw captures and working files do not belong in the GitHub Pages repository.
 
 ## GitHub Pages embedding
 
-Use the hero as a silent inline loop:
+Use the nominal video as a silent inline loop:
 
 ```html
-<video autoplay muted loop playsinline poster="assets/dice/dice_hero_poster.webp">
-  <source src="assets/dice/dice_hero.webm" type="video/webm">
-  <source src="assets/dice/dice_hero.mp4" type="video/mp4">
+<video autoplay muted loop playsinline
+       poster="assets/dice/dice_nominal_success_poster.webp"
+       aria-describedby="dice-nominal-caption">
+  <source src="assets/dice/dice_nominal_success.webm" type="video/webm">
+  <source src="assets/dice/dice_nominal_success.mp4" type="video/mp4">
 </video>
 ```
 
-The two longer videos should not autoplay:
+Use controls for the longer evidence clips:
 
 ```html
 <video controls preload="metadata"
-       poster="assets/dice/dice_task_explainer_poster.webp">
-  <source src="assets/dice/dice_task_explainer.mp4" type="video/mp4">
+       poster="assets/dice/dice_adverse_boundary_poster.webp">
+  <source src="assets/dice/dice_adverse_boundary.mp4" type="video/mp4">
 </video>
 ```
 
-Keep only optimized exports and posters in the Pages repository. Git LFS is not
-used because GitHub Pages cannot serve LFS objects.
+Render the corresponding `.md` content as nearby page text; do not burn that
+copy into new image cards. Git LFS is not used because GitHub Pages cannot
+serve LFS objects.
 
 ## Low-level capture and annotation
 
-The coordinator builds on two independently usable scripts. Capture one
-nominal view:
+The coordinator still builds on independently usable scripts. Capture one
+view:
 
 ```bash
 python -u scripts/play_rsl.py \
@@ -212,7 +225,7 @@ python -u scripts/play_rsl.py \
   --headless
 ```
 
-Annotate that capture:
+Annotate it at half speed:
 
 ```bash
 python scripts/annotate_video.py \
@@ -221,38 +234,26 @@ python scripts/annotate_video.py \
   --summary videos/manual_nominal/capture_summary.json \
   --initial-metrics videos/manual_nominal/initial_metrics.json \
   --style technical \
+  --playback-speed 0.5 \
   --output videos/manual_nominal/annotated.mp4
 ```
 
-Direct capture directories are immutable by design. Use a new output directory
-instead of mixing stale MP4 files and new telemetry.
+Direct capture directories are immutable by design. Use a new destination
+instead of mixing stale MP4 files with new telemetry.
 
 ## Failure handling
 
-- **Physics audit mismatch:** do not bypass it for final publication. Compare
-  `audit/physics_audit.json`; the numbered visual asset must not change the
-  evaluated rigid-body behavior. `--skip-physics-audit` is for camera debugging
-  only.
-- **No adverse dropped scout:** rerun with a wider fixed range, for example
-  `--adverse-seeds 7:40 --force`.
-- **Replay trace mismatch:** camera rendering changed or exposed
-  nondeterministic dynamics. The script intentionally stops rather than
-  combining different trajectories as if they were synchronized views.
-- **Video/telemetry mismatch:** the annotator counts actually decodable frames
-  instead of trusting MP4 container metadata. It supports an exact post-step
-  mapping, one explicitly declared initial frame, or one missing final frame
-  when (and only when) the unmatched telemetry row is terminal. In that last
-  MoviePy boundary case it repeats the final decoded image for one frame and
-  overlays the true terminal telemetry. Capture summaries declare whether the
-  recorder started from an initial or post-step frame, preventing an ambiguous
-  one-frame offset from silently shifting every HUD label. Larger offsets and
-  missing non-terminal frames remain hard failures; inspect the raw capture and
-  Gymnasium version.
-- **Missing `libx264`:** install the Ubuntu FFmpeg package and verify the
-  encoder before rerunning.
-- **Missing final evaluation:** the quantitative result cards are deliberately
-  not populated from a different run or checkpoint. Run the final evaluation
-  for the selected checkpoint, then rerun the renderer.
-- **Unexpected framing:** review `exports/camera_contact_sheet.webp`, adjust the
-  named camera presets in `dicedial.portfolio_video`, and rerender with
-  `--force`.
+- **Physics audit mismatch:** do not bypass it for publication. The numbered
+  visual asset must preserve the evaluated rigid-body behavior.
+- **Replay trace mismatch:** the script stops because different trajectories
+  must not be presented as synchronized camera views.
+- **Video/telemetry mismatch:** only exact declared frame mappings and the
+  known single missing terminal-frame MoviePy boundary case are accepted.
+- **Composition-only validation failure:** keep the existing package intact;
+  inspect the reported manifest, path, checkpoint, trace, or video contract.
+- **Missing `libx264`:** install Ubuntu FFmpeg and verify the encoder.
+- **Missing final evaluation:** run the final evaluation for this checkpoint;
+  captions are never populated from another run.
+- **Unexpected framing:** inspect the raw camera captures, adjust the named
+  presets in `dicedial.portfolio_video`, and perform a full recapture. Center
+  cropping in composition cannot repair a fundamentally misplaced camera.
