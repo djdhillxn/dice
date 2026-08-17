@@ -1,4 +1,4 @@
-"""Unit tests for deterministic portfolio selection and validation helpers."""
+"""Unit tests for deterministic portfolio capture and validation helpers."""
 
 import csv
 import json
@@ -9,6 +9,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dicedial.portfolio_video import (
+    PORTFOLIO_COMMAND_LIMITS,
+    PORTFOLIO_PLAYBACK_SPEED,
+    PORTFOLIO_SEED,
+    PORTFOLIO_STORIES,
     PRESENTATION_COLLISION_EXTENT_M,
     PRESENTATION_MASS_KG,
     align_video_telemetry,
@@ -16,23 +20,12 @@ from dicedial.portfolio_video import (
     compare_metric_traces,
     compare_physics_snapshots,
     parse_resolution,
-    parse_seed_spec,
+    parse_story_spec,
+    portfolio_capture_plan,
     presentation_duration,
     probe_portfolio_video,
     resolve_portfolio_artifact,
-    select_representative_scout,
 )
-
-
-def _scout(seed, duration, commands, outcome, dropped=False):
-    return {
-        "status": "complete",
-        "seed": seed,
-        "duration_seconds": duration,
-        "commands_completed": commands,
-        "outcome": outcome,
-        "dropped": dropped,
-    }
 
 
 def _write_trace(path, alignment_offset=0.0, event_override=None):
@@ -114,12 +107,12 @@ class TestPortfolioVideo(unittest.TestCase):
                 ("adverse", 0.95, 0.45, 23.0),
             )
         }
-        selections = {
-            "nominal": {"seed": 10, "commands_completed": 6, "duration_seconds": 4.27},
-            "robust": {"seed": 18, "commands_completed": 6, "duration_seconds": 4.65},
+        rollouts = {
+            "nominal": {"seed": 9, "commands_completed": 12, "duration_seconds": 8.27},
+            "robust": {"seed": 9, "commands_completed": 12, "duration_seconds": 8.65},
             "adverse": {"seed": 9, "commands_completed": 10, "duration_seconds": 8.07},
         }
-        captions = build_portfolio_captions(final_results, selections)
+        captions = build_portfolio_captions(final_results, rollouts)
         self.assertEqual(
             set(captions),
             {
@@ -129,8 +122,50 @@ class TestPortfolioVideo(unittest.TestCase):
             },
         )
         self.assertIn("0.5× playback", captions["dice_nominal_success.md"])
+        self.assertIn("without seed search", captions["dice_nominal_success.md"])
+        self.assertIn("`FACE ERROR`", captions["dice_nominal_success.md"])
+        self.assertIn("12-command", captions["dice_physics_variation.md"])
         self.assertIn("seed 9", captions["dice_adverse_boundary.md"])
         self.assertIn("45.00%", captions["dice_adverse_boundary.md"])
+
+        nominal_only = build_portfolio_captions(
+            final_results,
+            {"nominal": rollouts["nominal"]},
+            stories=("nominal_success",),
+        )
+        self.assertEqual(set(nominal_only), {"dice_nominal_success.md"})
+
+    def test_declares_fixed_seed_story_registry_and_capture_plan(self):
+        self.assertEqual(PORTFOLIO_SEED, 9)
+        self.assertEqual(PORTFOLIO_PLAYBACK_SPEED, 0.5)
+        self.assertEqual(
+            PORTFOLIO_COMMAND_LIMITS,
+            {"nominal": 12, "robust": 12, "adverse": 0},
+        )
+        self.assertEqual(
+            parse_story_spec(),
+            ("nominal_success", "physics_variation", "adverse_boundary"),
+        )
+        self.assertEqual(
+            parse_story_spec("physics_variation,nominal_success,physics_variation"),
+            ("physics_variation", "nominal_success"),
+        )
+        self.assertEqual(
+            portfolio_capture_plan(tuple(PORTFOLIO_STORIES)),
+            {
+                "nominal": ("hero", "top"),
+                "robust": ("hero",),
+                "adverse": ("hero", "side"),
+            },
+        )
+        self.assertEqual(
+            portfolio_capture_plan(("physics_variation",)),
+            {"nominal": ("hero",), "robust": ("hero",)},
+        )
+        with self.assertRaises(ValueError):
+            parse_story_spec("")
+        with self.assertRaises(ValueError):
+            parse_story_spec("unknown")
 
     def test_probe_returns_video_metadata_after_faststart_file_check(self):
         payload = {
@@ -256,39 +291,10 @@ class TestPortfolioVideo(unittest.TestCase):
         self.assertIn("double size = 0.059", asset)
         self.assertNotIn("0.0325", asset)
 
-    def test_parses_resolution_and_seed_ranges(self):
+    def test_parses_resolution(self):
         self.assertEqual(parse_resolution("1920x1080"), (1920, 1080))
-        self.assertEqual(parse_seed_spec("7:9,11,9"), [7, 8, 9, 11])
         with self.assertRaises(ValueError):
             parse_resolution("1919x1080")
-        with self.assertRaises(ValueError):
-            parse_seed_spec("9:7")
-
-    def test_selects_median_success_and_representative_adverse_drop(self):
-        nominal = [
-            _scout(7, 5.0, 6, "completed_sequence"),
-            _scout(8, 7.0, 6, "completed_sequence"),
-            _scout(9, 6.0, 6, "completed_sequence"),
-            _scout(10, 2.0, 1, "dropped", True),
-        ]
-        selected_nominal = select_representative_scout("nominal", nominal)
-        self.assertEqual(selected_nominal["seed"], 9)
-
-        adverse = [
-            _scout(20, 2.0, 0, "dropped", True),
-            _scout(21, 7.4, 9, "dropped", True),
-            _scout(22, 9.0, 10, "dropped", True),
-            _scout(23, 24.0, 32, "timeout"),
-        ]
-        selected_adverse = select_representative_scout("adverse", adverse)
-        self.assertEqual(selected_adverse["seed"], 21)
-        selected_custom_adverse = select_representative_scout(
-            "adverse",
-            adverse,
-            adverse_target_commands=10,
-            adverse_target_duration_seconds=9.1,
-        )
-        self.assertEqual(selected_custom_adverse["seed"], 22)
 
     def test_trace_validation_requires_events_and_numeric_state(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

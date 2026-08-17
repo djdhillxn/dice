@@ -211,7 +211,7 @@ Forward port `6006` over SSH from your local machine and open `http://localhost:
 | `scripts/evaluate_rsl.py` | Single-condition nominal, robust, or adverse evaluation with progress and JSON/CSV outputs | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/<run>/model_4000.pt --episodes 1000` |
 | `scripts/run_checkpoint_sweep.py` | Discovers, nominally evaluates, and ranks every saved checkpoint except `model_0.pt` | `python -u scripts/run_checkpoint_sweep.py <timestamp>_<run_name>` |
 | `scripts/run_final_evaluation.sh` | Runs the three final conditions, supports interruption-safe reuse, and writes combined JSON/CSV/text results | `bash scripts/run_final_evaluation.sh outputs/<run>/model_4000.pt` |
-| `scripts/render_portfolio_videos.py` | Produces three half-speed, dual-view portfolio videos with posters, Markdown captions, manifest, and checksums; can recompose completed captures without Isaac Sim | `python -u scripts/render_portfolio_videos.py <timestamp>_<run_name>` |
+| `scripts/render_portfolio_videos.py` | Runs the fixed-seed capture, replay validation, and composition pipeline end to end for three half-speed portfolio videos | `python -u scripts/render_portfolio_videos.py <timestamp>_<run_name> --force` |
 | `scripts/play_rsl.py` | Low-level deterministic condition/camera capture and action-trajectory replay | `python -u scripts/play_rsl.py --checkpoint outputs/<run>/model_4000.pt --condition nominal --camera hero --output videos/manual --headless` |
 | `scripts/annotate_video.py` | Strictly synchronizes the scalable HUD and creates a browser-compatible H.264 MP4 | See `docs/video_rendering.md` |
 
@@ -254,8 +254,8 @@ In naive setups, policies receive a static posture reward proportional to how cl
 | `DICE-Shadow-Eval-v0` | Nominal evaluation | stock instanceable DexCube | none |
 | `DICE-Shadow-Robust-v0` | Symmetric held-out robustness evaluation | stock instanceable DexCube | mass and physically consistent friction ±20% |
 | `DICE-Shadow-Adverse-v0` | Adverse material stress evaluation | stock instanceable DexCube | fixed 1.5x mass and 0.7 friction |
-| `DICE-Shadow-Play-v0` | Six-command video | local numbered die | fixed nominal friction |
-| `DICE-Shadow-Play-Robust-v0` | Six-command symmetric-variation video | local numbered die | mass and physically consistent friction ±20% |
+| `DICE-Shadow-Play-v0` | Nominal video (coordinator targets 12 commands) | local numbered die | fixed nominal friction |
+| `DICE-Shadow-Play-Robust-v0` | Symmetric-variation video (coordinator targets 12 commands) | local numbered die | mass and physically consistent friction ±20% |
 | `DICE-Shadow-Play-Adverse-v0` | Long-horizon adverse failure video | local numbered die | fixed 1.5x mass and 0.7 friction |
 
 ---
@@ -349,26 +349,21 @@ path. Completed matching evaluations are reused after an interruption; pass
 
 ```bash
 python -u scripts/render_portfolio_videos.py \
-  <timestamp>_<run_name>
+  <timestamp>_<run_name> \
+  --force
 ```
 
 This headless GCP workflow verifies the presentation die against the stock
-evaluation object, selects representative deterministic trajectories, renders
-three camera presets, and rejects unsynchronized replays. It exports nominal
-oblique/top success, nominal-versus-physics-variation, and adverse oblique/side
-failure-boundary videos at 0.5× playback under
+evaluation object, uses one declared seed (`9` by default) without seed search,
+and rejects unsynchronized camera replays. Nominal and symmetric-variation
+captures run for 12 successful commands; adverse capture runs until its drop or
+declared horizon. It exports nominal oblique/top success,
+nominal-versus-physics-variation, and adverse oblique/side failure-boundary
+videos at 0.5× playback under
 `videos/<run>_model_4000/exports/`. Each MP4 has a footage-derived poster and a
 same-named Markdown caption; static title cards are not baked into the videos.
-
-To rebuild only the presentation from already completed captures, without
-launching Isaac Sim, run:
-
-```bash
-python -u scripts/render_portfolio_videos.py \
-  <timestamp>_<run_name> \
-  --compose-only \
-  --force
-```
+`--force` deliberately replaces that run/checkpoint's previous video directory
+and starts the pipeline again from fresh captures.
 
 Install Ubuntu's `ffmpeg` and `fonts-dejavu-core` packages first. See the complete
 [portfolio video rendering runbook](docs/video_rendering.md).

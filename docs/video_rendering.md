@@ -8,9 +8,9 @@ HTML/CSS title, explanation, and quantitative caption.
 
 | Export | Evidence shown | Views |
 |---|---|---|
-| `dice_nominal_success.mp4` | A representative six-command nominal rollout | Synchronized oblique and top-down views |
-| `dice_physics_variation.mp4` | Nominal behavior beside a held-out ±20% mass/friction rollout | Full-height oblique views |
-| `dice_adverse_boundary.mp4` | A representative heavy, slippery rollout through its eventual drop | Synchronized oblique and side-contact views |
+| `dice_nominal_success.mp4` | One fixed-seed, 12-command nominal rollout | Synchronized oblique and top-down views |
+| `dice_physics_variation.mp4` | Fixed-seed nominal behavior beside held-out ±20% mass/friction | Full-height oblique views |
+| `dice_adverse_boundary.mp4` | The same declared seed under heavy, slippery physics through its drop | Synchronized oblique and side-contact views |
 
 All policy footage is presented at **0.5× real-time simulation speed**. Raw
 captures remain 60 FPS; the exports are 30 FPS and retain the source frames,
@@ -18,6 +18,12 @@ so the slower presentation exposes finger motion instead of merely lowering
 the frame rate. A 0.75-second terminal hold makes a confirmed face or drop
 readable. Every MP4 is silent H.264, 1920x1080, `yuv420p`, and fast-start
 optimized.
+
+The synchronized videos use floating telemetry chips rather than a wide bottom
+banner. `FACE ERROR` is the angle between the requested face's outward normal
+and world up, so 0° is perfect alignment. The narrow 20-segment `HOLD` rail
+counts consecutive valid confirmation steps; alignment within 16° alone is not
+enough because the position and angular-speed gates must also remain valid.
 
 The public package also contains one footage-derived WebP poster and one
 Markdown caption per video, SHA-256 checksums, and optional VP9 WebM
@@ -57,7 +63,8 @@ defaults:
 
 ```bash
 python -u scripts/render_portfolio_videos.py \
-  2026-08-16_11-22-43_angular_bound_pilot_gurgaon
+  2026-08-16_11-22-43_angular_bound_pilot_gurgaon \
+  --force
 ```
 
 Equivalent explicit form:
@@ -70,39 +77,31 @@ python -u scripts/render_portfolio_videos.py \
   --resolution 1920x1080 \
   --raw-fps 60 \
   --export-fps 30 \
-  --playback-speed 0.5
+  --playback-speed 0.5 \
+  --seed 9 \
+  --force
 ```
 
 Add `--webm` for VP9 copies and `--show-ui` only on a machine with an
 interactive display. A complete run/checkpoint directory is never silently
-overwritten; full recapture requires `--force` and replaces that resolved
-portfolio directory.
+overwritten. `--force` replaces that exact resolved portfolio directory and
+then reruns capture, replay, annotation, composition, and validation from the
+beginning. It is the intended option while iterating on presentation code.
 
-## Recompose existing captures without Isaac Sim
+## One-command workflow and story registry
 
-After pulling these code changes onto GCP, reuse the already completed scouts,
-trajectories, telemetry, and camera captures:
+The public workflow is deliberately one end-to-end command. There is no
+composition-only checkpoint and no seed-selection phase. By default the script
+renders exactly `nominal_success`, `physics_variation`, and `adverse_boundary`.
+The small declarative registry in `dicedial.portfolio_video` supplies each
+story's panels, cameras, HUD style, filename, and poster position.
 
-```bash
-python -u scripts/render_portfolio_videos.py \
-  2026-08-16_11-22-43_angular_bound_pilot_gurgaon \
-  --compose-only \
-  --force
-```
+For a later focused render, `--stories` accepts a comma-separated subset of
+those keys and automatically derives the minimum camera plan. The standard
+portfolio command should omit it so all three declared exports are produced.
+This configurability does not introduce seed search or additional experiments.
 
-Composition-only mode does **not** start Isaac Sim, scout new seeds, or rerun
-the policy. It verifies the existing manifest, checkpoint identity, capture
-paths, resolution, FPS, and synchronized traces; stages all three new exports;
-probes their technical contracts; and only then atomically replaces
-`exports/`. If composition fails, the previous public package remains in
-place. It can also rebase absolute GCP artifact paths after the complete
-portfolio directory has been copied to another machine.
-
-Legacy `cards/` or `intermediate/` directories from an earlier completed render
-may remain as private provenance, but presentation revision 2 neither reads
-nor publishes them. A fresh full render does not create static cards.
-
-## Selection and evidence contract
+## Capture and evidence contract
 
 The full coordinator:
 
@@ -111,34 +110,34 @@ The full coordinator:
 2. Records repository and software provenance.
 3. Audits the numbered presentation die against the stock evaluation cube,
    requiring matching mass and inertia within the declared tolerance.
-4. Scouts fixed seed sets without cameras: nominal 7–11, symmetric variation
-   17–21, and adverse 7–22.
-5. Selects successful nominal and variation rollouts nearest their median
-   six-command completion time—not the fastest or most flattering sample.
-6. Derives the median failure commands/time from adverse evaluation episodes
-   and selects the closest dropped scout.
-7. Replays each selected 20-dimensional action trajectory through the required
-   fixed camera views.
-8. Requires exact command/success/drop event agreement and tight numeric trace
-   agreement between scout and render replay.
-9. Composes full-height center crops, one shared telemetry HUD for synchronized
-   views, 0.5× playback, footage-derived posters, and Markdown captions.
-10. Uses `ffprobe` to enforce codec, pixel format, dimensions, FPS, progressive
-    loading, duration, and file-size contracts before installing exports.
+4. Uses seed `9` by default for every condition, directly and without testing
+   alternate seeds.
+5. Captures nominal and symmetric variation through exactly 12 confirmed
+   commands. The adverse capture has no command limit and continues until its
+   fixed-seed drop or the 24-second horizon; it fails clearly if no drop occurs.
+6. Records each condition's primary 20-dimensional action trajectory and
+   replays only that trace through the additional fixed camera view.
+7. Requires exact command/success/drop event agreement and tight numeric trace
+   agreement between the primary capture and every camera replay.
+8. Composes full-height center crops, a compact shared telemetry HUD for
+   synchronized views, 0.5× playback, footage-derived posters, and Markdown
+   captions.
+9. Uses `ffprobe` to enforce codec, pixel format, dimensions, FPS, progressive
+   loading, duration, and file-size contracts before installing exports.
 
 The nominal oblique/top and adverse oblique/side panels are the same trajectory
-and simulation ticks. The nominal/variation comparison intentionally shows two
-separately selected median-like rollouts; it is a behavioral comparison, not a
-claim of frame-identical physics counterfactuals. Aggregate 1,000-episode
-evaluation values in the Markdown companions remain the generalization
-evidence.
+and simulation ticks. The nominal/variation comparison uses the same declared
+seed but executes separately under different physics; it is a behavioral
+comparison, not a claim of frame-identical physics counterfactuals. Aggregate
+1,000-episode evaluation values in the Markdown companions remain the
+generalization evidence.
 
 ## Presentation conditions
 
 | Condition | Task | Commands | Termination |
 |---|---|---|---|
-| Nominal | `DICE-Shadow-Play-v0` | Fixed cycle `1, 6, 3, 5, 2, 4` | Six confirmed commands, drop, or 40 s |
-| Symmetric variation | `DICE-Shadow-Play-Robust-v0` | Same cycle | Six confirmed commands, drop, or 40 s |
+| Nominal | `DICE-Shadow-Play-v0` | Repeating cycle `1, 6, 3, 5, 2, 4` | 12 confirmed commands, drop, or 40 s |
+| Symmetric variation | `DICE-Shadow-Play-Robust-v0` | Same repeating cycle | 12 confirmed commands, drop, or 40 s |
 | Adverse | `DICE-Shadow-Play-Adverse-v0` | Repeating cycle | Drop or the 24 s evaluation horizon |
 
 All conditions use the same frozen deterministic policy and numbered die. The
@@ -154,7 +153,6 @@ visible; training and quantitative evaluation retain normal automatic resets.
 videos/<timestamped-run>_model_4000/
 ├── manifest.json
 ├── audit/
-├── scout/<condition>/seed_<seed>/
 ├── captures/<condition>/seed_<seed>/<camera>/
 └── exports/
     ├── dice_nominal_success.mp4
@@ -220,7 +218,8 @@ python -u scripts/play_rsl.py \
   --checkpoint outputs/<run>/model_4000.pt \
   --condition nominal \
   --camera hero \
-  --seed 7 \
+  --seed 9 \
+  --command-limit 12 \
   --output videos/manual_nominal \
   --headless
 ```
@@ -249,8 +248,11 @@ instead of mixing stale MP4 files with new telemetry.
   must not be presented as synchronized camera views.
 - **Video/telemetry mismatch:** only exact declared frame mappings and the
   known single missing terminal-frame MoviePy boundary case are accepted.
-- **Composition-only validation failure:** keep the existing package intact;
-  inspect the reported manifest, path, checkpoint, trace, or video contract.
+- **Fixed-seed nominal/variation failure:** inspect the capture rather than
+  silently switching seeds; the declared 12-command evidence contract was not
+  met.
+- **Fixed-seed adverse horizon:** the script reports that the declared seed did
+  not drop; it never searches for a more convenient failure.
 - **Missing `libx264`:** install Ubuntu FFmpeg and verify the encoder.
 - **Missing final evaluation:** run the final evaluation for this checkpoint;
   captions are never populated from another run.

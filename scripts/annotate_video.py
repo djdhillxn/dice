@@ -77,17 +77,23 @@ def _count_decodable_frames(capture):
 def _status_timeline(rows, raw_fps):
     statuses = [row.get("status", "rotating") for row in rows]
     completed_faces = [_integer(row, "completed_face") for row in rows]
+    display_angles = [_number(row, "angular_error_degrees") for row in rows]
     linger_frames = max(1, round(0.40 * raw_fps))
     for index, row in enumerate(rows):
         if _integer(row, "success") != 1:
             continue
         completed_face = _integer(row, "completed_face")
+        # The environment samples the next command on the success step, so its
+        # logged angle already describes that new target. Retain the immediately
+        # preceding completed-command angle during the editorial confirmation.
+        completed_angle = display_angles[max(0, index - 1)]
         for linger_index in range(index, min(len(rows), index + linger_frames)):
             if _integer(rows[linger_index], "drop"):
                 break
             statuses[linger_index] = "confirmed"
             completed_faces[linger_index] = completed_face
-    return statuses, completed_faces
+            display_angles[linger_index] = completed_angle
+    return statuses, completed_faces, display_angles
 
 
 def _panel(draw, box, radius, fill=(15, 20, 28, 218), outline=(255, 255, 255, 35)):
@@ -103,6 +109,7 @@ def _annotate_frame(
     row,
     status,
     completed_face,
+    display_angle,
     condition_label,
     style,
     fonts,
@@ -125,10 +132,12 @@ def _annotate_frame(
     draw = ImageDraw.Draw(overlay)
 
     target = _integer(row, "target_face")
+    if status == "confirmed" and completed_face:
+        target = completed_face
     top = _integer(row, "top_face")
     commands = _integer(row, "commands_completed")
     hold = max(0.0, min(1.0, _number(row, "hold_progress")))
-    angle = _number(row, "angular_error_degrees")
+    angle = float(display_angle)
 
     # Target badge.
     target_width = round((300 if style == "minimal" else 330) * scale)
@@ -203,71 +212,86 @@ def _annotate_frame(
                 anchor="mm",
             )
 
-    # Bottom diagnostic strip. The hero remains intentionally sparse.
-    bottom_height = round((104 if style == "minimal" else 154) * scale)
-    bottom_box = (
-        margin,
-        height - margin - bottom_height,
-        width - margin,
-        height - margin,
+    # Compact telemetry chips preserve the diagnostics without obscuring a
+    # full-width strip of the hand and die.
+    chip_height = round(68 * scale)
+    chip_specs = (
+        (round(285 * scale), f"COMMANDS  {commands}", fonts["body_bold"]),
+        (round(245 * scale), f"TOP FACE  {top}", fonts["body_bold"]),
+        (round(350 * scale), f"FACE ERROR  {angle:4.1f} deg", fonts["body"]),
     )
-    _panel(draw, bottom_box, radius)
-    baseline = bottom_box[1] + round(27 * scale)
+    total_chip_width = sum(item[0] for item in chip_specs) + gap * (len(chip_specs) - 1)
+    chip_left = (width - total_chip_width) // 2
+    chip_top = height - margin - chip_height
+    for chip_width, label, font in chip_specs:
+        chip_box = (
+            chip_left,
+            chip_top,
+            chip_left + chip_width,
+            chip_top + chip_height,
+        )
+        _panel(draw, chip_box, round(13 * scale), fill=(15, 20, 28, 205))
+        _text(
+            draw,
+            (chip_box[0] + round(20 * scale), chip_box[1] + chip_height // 2),
+            label,
+            font,
+            fill=(226, 232, 240, 255),
+            anchor="lm",
+        )
+        chip_left = chip_box[2] + gap
+
+    # A narrow 20-segment rail is easier to read than a screen-wide progress
+    # bar. On synchronized views it sits on the divider, leaving both subjects
+    # unobstructed. The confirmed state is held by the existing status timeline.
+    rail_width = round(106 * scale)
+    rail_height = round(354 * scale)
+    rail_center_x = width // 2 if view_labels else width - margin - rail_width // 2
+    rail_top = margin + panel_height + round(92 * scale)
+    rail_box = (
+        rail_center_x - rail_width // 2,
+        rail_top,
+        rail_center_x + rail_width // 2,
+        rail_top + rail_height,
+    )
+    _panel(draw, rail_box, round(14 * scale), fill=(15, 20, 28, 205))
+    visual_hold = 1.0 if status == "confirmed" else hold
+    hold_steps = max(0, min(20, round(20 * visual_hold)))
     _text(
         draw,
-        (bottom_box[0] + round(22 * scale), baseline),
-        f"COMMANDS  {commands}",
-        fonts["body_bold"],
+        (rail_center_x, rail_box[1] + round(27 * scale)),
+        "HOLD",
+        fonts["small_bold"],
+        fill=(218, 224, 232, 255),
+        anchor="mm",
     )
-
-    if style == "minimal":
-        _text(
-            draw,
-            (bottom_box[2] - round(22 * scale), baseline),
-            "20-DoF Shadow Hand  |  deterministic policy",
-            fonts["body"],
-            fill=(196, 204, 216, 255),
-            anchor="ra",
+    _text(
+        draw,
+        (rail_center_x, rail_box[1] + round(61 * scale)),
+        f"{hold_steps:02d}/20",
+        fonts["small_bold"],
+        fill=STATUS_COLORS.get(status, STATUS_COLORS["holding"]),
+        anchor="mm",
+    )
+    segment_gap = max(1, round(3 * scale))
+    segment_height = max(2, round(9 * scale))
+    segment_width = round(43 * scale)
+    segments_bottom = rail_box[3] - round(20 * scale)
+    active_color = STATUS_COLORS.get(status, STATUS_COLORS["holding"])
+    if status == "rotating":
+        active_color = STATUS_COLORS["holding"]
+    for segment in range(20):
+        segment_bottom = segments_bottom - segment * (segment_height + segment_gap)
+        segment_box = (
+            rail_center_x - segment_width // 2,
+            segment_bottom - segment_height,
+            rail_center_x + segment_width // 2,
+            segment_bottom,
         )
-    else:
-        _text(
-            draw,
-            (bottom_box[0] + round(340 * scale), baseline),
-            f"TOP FACE  {top}",
-            fonts["body_bold"],
-        )
-        _text(
-            draw,
-            (bottom_box[0] + round(610 * scale), baseline),
-            f"ANGLE ERROR  {angle:4.1f} deg",
-            fonts["body"],
-            fill=(218, 224, 232, 255),
-        )
-        bar_left = bottom_box[0] + round(22 * scale)
-        bar_right = bottom_box[2] - round(22 * scale)
-        bar_top = bottom_box[1] + round(92 * scale)
-        bar_bottom = bar_top + round(24 * scale)
         draw.rounded_rectangle(
-            (bar_left, bar_top, bar_right, bar_bottom),
-            radius=round(8 * scale),
-            fill=(55, 62, 72, 255),
-        )
-        progress_right = bar_left + round((bar_right - bar_left) * hold)
-        if progress_right > bar_left:
-            draw.rounded_rectangle(
-                (bar_left, bar_top, progress_right, bar_bottom),
-                radius=round(8 * scale),
-                fill=STATUS_COLORS["confirmed"]
-                if hold >= 1.0
-                else STATUS_COLORS["holding"],
-            )
-        _text(
-            draw,
-            (bar_right, bar_top - gap),
-            f"HOLD  {round(20 * hold):02d} / 20",
-            fonts["small_bold"],
-            fill=(218, 224, 232, 255),
-            anchor="ra",
+            segment_box,
+            radius=max(1, round(3 * scale)),
+            fill=active_color if segment < hold_steps else (62, 69, 79, 225),
         )
 
     composed = Image.alpha_composite(base, overlay).convert("RGB")
@@ -334,7 +358,7 @@ def annotate_video(
     synthesized_rows = alignment["synthesized_rows"]
     alignment_mode = alignment["mode"]
     timeline_rows = [*frame_rows, *synthesized_rows]
-    statuses, completed_faces = _status_timeline(timeline_rows, raw_fps)
+    statuses, completed_faces, display_angles = _status_timeline(timeline_rows, raw_fps)
 
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
@@ -399,6 +423,7 @@ def annotate_video(
                 row,
                 statuses[decoded_frames],
                 completed_faces[decoded_frames],
+                display_angles[decoded_frames],
                 condition_label,
                 style,
                 fonts,
@@ -425,6 +450,7 @@ def annotate_video(
                 row,
                 statuses[timeline_index],
                 completed_faces[timeline_index],
+                display_angles[timeline_index],
                 condition_label,
                 style,
                 fonts,

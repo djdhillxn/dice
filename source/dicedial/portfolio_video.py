@@ -16,6 +16,7 @@ RAW_FPS = 60
 EXPORT_FPS = 30
 PORTFOLIO_PLAYBACK_SPEED = 0.5
 PORTFOLIO_FINAL_HOLD_SECONDS = 0.75
+PORTFOLIO_SEED = 9
 PRESENTATION_COLLISION_EXTENT_M = (0.060, 0.060, 0.060)
 PRESENTATION_MASS_KG = 0.216
 
@@ -60,6 +61,56 @@ PORTFOLIO_CONDITIONS = {
         },
         "max_steps": 1_440,
     },
+}
+
+# The coordinator consumes this small declarative contract instead of keeping
+# capture requirements and layouts in separate hard-coded branches. A new story
+# declares its panels here and adds its companion copy in the caption builder.
+PORTFOLIO_STORIES = {
+    "nominal_success": {
+        "key": "nominal_success",
+        "filename": "dice_nominal_success.mp4",
+        "layout": "synchronized",
+        "panels": (
+            {"condition": "nominal", "camera": "hero", "label": "Oblique"},
+            {"condition": "nominal", "camera": "top", "label": "Top view"},
+        ),
+        "telemetry_condition": "nominal",
+        "hud_style": "technical",
+        "poster_fraction": 0.50,
+    },
+    "physics_variation": {
+        "key": "physics_variation",
+        "filename": "dice_physics_variation.mp4",
+        "layout": "comparison",
+        "panels": (
+            {"condition": "nominal", "camera": "hero", "label": "NOMINAL"},
+            {
+                "condition": "robust",
+                "camera": "hero",
+                "label": "±20% PHYSICS VARIATION",
+            },
+        ),
+        "poster_fraction": 0.50,
+    },
+    "adverse_boundary": {
+        "key": "adverse_boundary",
+        "filename": "dice_adverse_boundary.mp4",
+        "layout": "synchronized",
+        "panels": (
+            {"condition": "adverse", "camera": "hero", "label": "Oblique"},
+            {"condition": "adverse", "camera": "side", "label": "Side view"},
+        ),
+        "telemetry_condition": "adverse",
+        "hud_style": "stress",
+        "poster_fraction": 0.68,
+    },
+}
+
+PORTFOLIO_COMMAND_LIMITS = {
+    "nominal": 12,
+    "robust": 12,
+    "adverse": 0,
 }
 
 # The hero preset preserves the existing known-good presentation view. The two
@@ -107,6 +158,44 @@ def sha256_file(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def parse_story_spec(value=None):
+    """Resolve a comma-separated story list in stable user-declared order."""
+
+    if value is None:
+        requested = list(PORTFOLIO_STORIES)
+    elif isinstance(value, str):
+        requested = value.split(",")
+    else:
+        requested = list(value)
+    stories = []
+    for raw_name in requested:
+        name = raw_name.strip()
+        if not name:
+            continue
+        if name not in PORTFOLIO_STORIES:
+            choices = ", ".join(PORTFOLIO_STORIES)
+            raise ValueError(f"Unknown portfolio story '{name}'; choose from {choices}")
+        if name not in stories:
+            stories.append(name)
+    if not stories:
+        raise ValueError("At least one portfolio story is required")
+    return tuple(stories)
+
+
+def portfolio_capture_plan(stories):
+    """Return deduplicated condition/camera requirements for story keys."""
+
+    plan = {}
+    for story_name in stories:
+        if story_name not in PORTFOLIO_STORIES:
+            raise ValueError(f"Unknown portfolio story: {story_name}")
+        for panel in PORTFOLIO_STORIES[story_name]["panels"]:
+            cameras = plan.setdefault(panel["condition"], [])
+            if panel["camera"] not in cameras:
+                cameras.append(panel["camera"])
+    return {condition: tuple(cameras) for condition, cameras in plan.items()}
 
 
 def presentation_duration(
@@ -160,15 +249,22 @@ def resolve_portfolio_artifact(path, output_directory):
     return candidate
 
 
-def build_portfolio_captions(final_results, selections, playback_speed=0.5):
-    """Build the three copy-ready Markdown companions for public videos."""
+def build_portfolio_captions(
+    final_results,
+    rollouts,
+    playback_speed=PORTFOLIO_PLAYBACK_SPEED,
+    stories=None,
+):
+    """Build copy-ready Markdown companions for the requested public stories."""
 
-    missing_results = {"nominal", "robust", "adverse"} - final_results.keys()
-    missing_selections = {"nominal", "robust", "adverse"} - selections.keys()
-    if missing_results or missing_selections:
+    stories = parse_story_spec(stories)
+    required_conditions = set(portfolio_capture_plan(stories))
+    missing_results = required_conditions - final_results.keys()
+    missing_rollouts = required_conditions - rollouts.keys()
+    if missing_results or missing_rollouts:
         raise ValueError(
             "Caption inputs are incomplete: "
-            f"results={sorted(missing_results)}, selections={sorted(missing_selections)}"
+            f"results={sorted(missing_results)}, rollouts={sorted(missing_rollouts)}"
         )
     if playback_speed <= 0.0:
         raise ValueError("Playback speed must be positive")
@@ -179,23 +275,23 @@ def build_portfolio_captions(final_results, selections, playback_speed=0.5):
     def episodes(condition):
         return int(float(final_results[condition]["episodes"]))
 
-    nominal = selections["nominal"]
-    robust = selections["robust"]
-    adverse = selections["adverse"]
     disclosure = (
         f"Footage is presented at **{playback_speed:g}× playback** for visual "
         "clarity; the deterministic policy was executed and evaluated at the "
         "original 60 Hz control rate."
     )
 
-    nominal_caption = f"""# Nominal semantic success
+    captions = {}
+    if "nominal_success" in stories:
+        nominal = rollouts["nominal"]
+        captions["dice_nominal_success.md"] = f"""# Nominal semantic success
 
 The requested die face is supplied as a semantic command to one deterministic
 20-DoF Shadow Hand policy. The synchronized oblique and top-down views show the
 same action trajectory, allowing the manipulation and upward-facing result to
 be checked together.
 
-- **Representative rollout:** seed {int(nominal["seed"])}, selected as the successful six-command candidate nearest the median completion time
+- **Fixed rollout:** seed {int(nominal["seed"])}, used directly without seed search or cherry-picking
 - **Rollout result:** {int(nominal["commands_completed"])} commands in {float(nominal["duration_seconds"]):.2f} simulation seconds, with no drop
 - **Final evaluation:** {percent("nominal", "issued_command_completion_rate"):.2f}% issued-command completion, {percent("nominal", "drop_rate"):.2f}% episode drop rate, {float(final_results["nominal"]["mean_consecutive_commands"]):.3f} mean consecutive commands over {episodes("nominal"):,} episodes
 - **Views:** oblique manipulation view (left) and top-down verification view (right)
@@ -204,17 +300,21 @@ be checked together.
 
 ## What to watch
 
-The target-face indicator changes only after the requested face is aligned,
-stabilized, and held through all 20 confirmation steps. The top-down view makes
-that semantic success independently visible.
+`FACE ERROR` is the angle between the requested face's outward normal and world
+up: 0° is ideal. A command is confirmed only when this error is within 16°,
+the die is centered and slow enough, and all 20 consecutive hold steps complete.
+The top-down view makes the semantic result independently visible.
 """
 
-    variation_caption = f"""# Symmetric physics variation
+    if "physics_variation" in stories:
+        nominal = rollouts["nominal"]
+        robust = rollouts["robust"]
+        captions["dice_physics_variation.md"] = f"""# Symmetric physics variation
 
-This comparison places a representative nominal rollout beside a representative
+This comparison places one fixed-seed nominal rollout beside a fixed-seed
 held-out physics rollout. The variation samples die mass and static/dynamic
-friction within ±20% of nominal; both use the same trained policy and the same
-six-command semantic cycle.
+friction within ±20% of nominal; both use the same trained policy and continue
+to the same 12-command presentation limit.
 
 - **Nominal rollout:** seed {int(nominal["seed"])}, {int(nominal["commands_completed"])} commands in {float(nominal["duration_seconds"]):.2f} simulation seconds
 - **Variation rollout:** seed {int(robust["seed"])}, {int(robust["commands_completed"])} commands in {float(robust["duration_seconds"]):.2f} simulation seconds
@@ -225,19 +325,21 @@ six-command semantic cycle.
 
 ## Interpretation
 
-The selected clips are median-like examples rather than the fastest trials.
-The aggregate evaluation—not either individual video—is the evidence for
-generalization under the held-out variation.
+The seed was declared once and used directly for both conditions. The aggregate
+evaluation—not either individual video—is the evidence for generalization under
+the held-out variation.
 """
 
-    adverse_caption = f"""# Adverse retention boundary
+    if "adverse_boundary" in stories:
+        adverse = rollouts["adverse"]
+        captions["dice_adverse_boundary.md"] = f"""# Adverse retention boundary
 
 The adverse condition fixes die mass at 1.5× nominal and both object-friction
 coefficients at 0.7× nominal. Synchronized oblique and side-contact views show a
-representative rollout that completes multiple semantic commands before the
-grasp eventually fails.
+fixed-seed rollout that completes multiple semantic commands before the grasp
+eventually fails.
 
-- **Representative rollout:** seed {int(adverse["seed"])}, selected to match the median failed episode in the final evaluation
+- **Fixed rollout:** seed {int(adverse["seed"])}, used directly without alternate-seed search
 - **Rollout result:** {int(adverse["commands_completed"])} commands before dropping at {float(adverse["duration_seconds"]):.2f} simulation seconds
 - **Final evaluation:** {percent("adverse", "issued_command_completion_rate"):.2f}% issued-command completion, {percent("adverse", "drop_rate"):.2f}% episode drop rate, {float(final_results["adverse"]["mean_consecutive_commands"]):.3f} mean consecutive commands over {episodes("adverse"):,} episodes
 - **Views:** oblique manipulation view (left) and side contact/failure view (right)
@@ -252,11 +354,7 @@ identifies a concrete sim-to-real robustness direction rather than hiding the
 policy's failure boundary.
 """
 
-    return {
-        "dice_nominal_success.md": nominal_caption,
-        "dice_physics_variation.md": variation_caption,
-        "dice_adverse_boundary.md": adverse_caption,
-    }
+    return captions
 
 
 def probe_portfolio_video(ffprobe, path, expected_resolution, expected_fps):
@@ -340,30 +438,6 @@ def parse_resolution(value):
     if width % 2 or height % 2:
         raise ValueError("Resolution dimensions must be even for yuv420p encoding")
     return width, height
-
-
-def parse_seed_spec(value):
-    """Parse comma-separated seeds and inclusive ``start:end`` ranges."""
-
-    seeds = []
-    for token in str(value).split(","):
-        token = token.strip()
-        if not token:
-            continue
-        if ":" in token:
-            start_text, end_text = token.split(":", maxsplit=1)
-            start, end = int(start_text), int(end_text)
-            if end < start:
-                raise ValueError(f"Invalid descending seed range: {token}")
-            seeds.extend(range(start, end + 1))
-        else:
-            seeds.append(int(token))
-    deduplicated = list(dict.fromkeys(seeds))
-    if not deduplicated:
-        raise ValueError("At least one seed is required")
-    if any(seed < 0 for seed in deduplicated):
-        raise ValueError("Seeds must be non-negative")
-    return deduplicated
 
 
 def read_json(path):
@@ -467,74 +541,13 @@ def align_video_telemetry(
     )
 
 
-def _median(values):
-    ordered = sorted(values)
-    midpoint = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[midpoint]
-    return 0.5 * (ordered[midpoint - 1] + ordered[midpoint])
-
-
-def select_representative_scout(
-    condition,
-    summaries,
-    adverse_target_commands=9.0,
-    adverse_target_duration_seconds=7.28,
-):
-    """Select a deterministic representative using the documented rule."""
-
-    if condition not in PORTFOLIO_CONDITIONS:
-        raise KeyError(f"Unknown portfolio condition: {condition}")
-    complete = [summary for summary in summaries if summary.get("status") == "complete"]
-    if condition == "adverse":
-        candidates = [summary for summary in complete if summary.get("dropped")]
-        if not candidates:
-            raise ValueError("No dropped adverse scout was found")
-
-        # Match the failed-episode medians from the quantitative evaluation.
-        # Command distance is the primary criterion.
-        return min(
-            candidates,
-            key=lambda summary: (
-                abs(
-                    float(summary["commands_completed"])
-                    - float(adverse_target_commands)
-                ),
-                abs(
-                    float(summary["duration_seconds"])
-                    - float(adverse_target_duration_seconds)
-                ),
-                int(summary["seed"]),
-            ),
-        )
-
-    candidates = [
-        summary
-        for summary in complete
-        if summary.get("outcome") == "completed_sequence"
-        and int(summary.get("commands_completed", 0)) >= 6
-    ]
-    if not candidates:
-        raise ValueError(f"No successful {condition} six-command scout was found")
-    median_duration = _median(
-        [float(summary["duration_seconds"]) for summary in candidates]
-    )
-    return min(
-        candidates,
-        key=lambda summary: (
-            abs(float(summary["duration_seconds"]) - median_duration),
-            int(summary["seed"]),
-        ),
-    )
-
-
 def read_metric_rows(path):
     with Path(path).open("r", encoding="utf-8", newline="") as stream:
         return list(csv.DictReader(stream))
 
 
 def compare_metric_traces(reference_path, candidate_path, numeric_tolerance=1.0e-4):
-    """Validate that camera replay retained the selected simulator trajectory."""
+    """Validate that camera replay retained the recorded simulator trajectory."""
 
     reference = read_metric_rows(reference_path)
     candidate = read_metric_rows(candidate_path)

@@ -36,6 +36,15 @@ parser.add_argument(
     default=None,
     help="Maximum policy steps; defaults to the selected condition horizon.",
 )
+parser.add_argument(
+    "--command-limit",
+    type=int,
+    default=None,
+    help=(
+        "Successful-command termination target; zero disables command-limit "
+        "termination and the task horizon/drop decides the outcome."
+    ),
+)
 parser.add_argument("--seed", type=int, default=7)
 parser.add_argument("--camera", choices=("hero", "top", "side"), default="hero")
 parser.add_argument("--resolution", default="1920x1080")
@@ -56,6 +65,8 @@ if args.seed < 0:
     parser.error("--seed must be non-negative")
 if args.video_length is not None and args.video_length <= 0:
     parser.error("--video_length must be positive")
+if args.command_limit is not None and args.command_limit < 0:
+    parser.error("--command-limit must be non-negative")
 if args.fps <= 0:
     parser.error("--fps must be positive")
 if not args.no_video:
@@ -181,7 +192,7 @@ def _write_metrics(path, rows):
         writer.writerows(rows)
 
 
-def _load_trajectory(path, checkpoint_hash, condition, task, seed):
+def _load_trajectory(path, checkpoint_hash, condition, task, seed, command_limit):
     path = Path(path).expanduser().resolve()
     with np.load(path, allow_pickle=False) as archive:
         actions = np.asarray(archive["actions"], dtype=np.float32)
@@ -194,6 +205,14 @@ def _load_trajectory(path, checkpoint_hash, condition, task, seed):
         raise ValueError("Trajectory task does not match the resolved task")
     if int(metadata["seed"]) != int(seed):
         raise ValueError("Trajectory seed does not match --seed")
+    # Presentation trajectories written before this field was introduced used
+    # the environment defaults: six commands for nominal/robust, no limit for
+    # adverse. Preserve those valid low-level replays while still rejecting an
+    # old six-command trace when the new 12-command contract is requested.
+    legacy_command_limit = 0 if condition == "adverse" else 6
+    recorded_command_limit = int(metadata.get("command_limit", legacy_command_limit))
+    if recorded_command_limit != int(command_limit):
+        raise ValueError("Trajectory command limit does not match --command-limit")
     if actions.ndim != 2 or actions.shape[1] != 20:
         raise ValueError(
             f"Expected trajectory actions shaped [steps, 20], got {actions.shape}"
@@ -247,6 +266,9 @@ def main():
         use_fabric=not args.disable_fabric,
     )
     env_cfg.seed = args.seed
+    if args.command_limit is not None:
+        env_cfg.max_commands_per_episode = args.command_limit
+    command_limit = int(env_cfg.max_commands_per_episode)
     env_cfg.emit_step_metrics = True
     env_cfg.wait_for_textures = not args.no_video
     # Every presentation/audit invocation uses one environment. Disabling the
@@ -297,6 +319,7 @@ def main():
             args.condition,
             task,
             args.seed,
+            command_limit,
         )
         max_steps = min(max_steps, len(replay_actions))
     else:
@@ -418,7 +441,7 @@ def main():
 
     if dropped:
         outcome = "dropped"
-    elif commands_completed >= 6 and args.condition != "adverse":
+    elif command_limit > 0 and commands_completed >= command_limit:
         outcome = "completed_sequence"
     elif terminal_done:
         outcome = "timeout"
@@ -435,6 +458,7 @@ def main():
             "condition": args.condition,
             "task": task,
             "seed": args.seed,
+            "command_limit": command_limit,
             "step_dt_seconds": step_dt,
             "steps": len(recorded_actions),
         }
@@ -450,6 +474,7 @@ def main():
         "condition_definition": condition,
         "task": task,
         "seed": args.seed,
+        "command_limit": command_limit,
         "camera": args.camera,
         "camera_definition": camera,
         "resolution": list(resolution),

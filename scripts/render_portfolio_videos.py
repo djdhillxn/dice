@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import importlib.metadata
 import importlib.util
 import os
@@ -13,26 +12,28 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from statistics import median
 
 from PIL import Image, ImageDraw, ImageFont, features as pillow_features
 
 from dicedial.checkpoint_sweep import resolve_run_directory
 from dicedial.portfolio_video import (
     EXPORT_FPS,
+    PORTFOLIO_COMMAND_LIMITS,
     PORTFOLIO_FINAL_HOLD_SECONDS,
     PORTFOLIO_PLAYBACK_SPEED,
     PORTFOLIO_SCHEMA_VERSION,
+    PORTFOLIO_SEED,
+    PORTFOLIO_STORIES,
     RAW_FPS,
     build_portfolio_captions,
     compare_metric_traces,
     compare_physics_snapshots,
     parse_resolution,
-    parse_seed_spec,
+    parse_story_spec,
+    portfolio_capture_plan,
     probe_portfolio_video,
     read_json,
     resolve_portfolio_artifact,
-    select_representative_scout,
     sha256_file,
     write_json,
 )
@@ -44,8 +45,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Capture or recompose the three-video DICE portfolio package from "
-            "one completed run."
+            "Capture and compose the DICE portfolio package end to end from "
+            "one completed run and one fixed seed."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -64,11 +65,26 @@ def parse_args():
         "--playback-speed",
         type=float,
         default=PORTFOLIO_PLAYBACK_SPEED,
-        help="Presentation speed for all policy footage; simulation timing is unchanged.",
+        choices=(PORTFOLIO_PLAYBACK_SPEED,),
+        help=(
+            "Locked presentation speed for all policy footage; simulation "
+            "timing is unchanged."
+        ),
     )
-    parser.add_argument("--nominal-seeds", default="7:11")
-    parser.add_argument("--robust-seeds", default="17:21")
-    parser.add_argument("--adverse-seeds", default="7:22")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=PORTFOLIO_SEED,
+        help="One fixed seed used for every requested portfolio condition.",
+    )
+    parser.add_argument(
+        "--stories",
+        default=",".join(PORTFOLIO_STORIES),
+        help=(
+            "Comma-separated story keys. The default renders exactly the "
+            "three declared portfolio videos."
+        ),
+    )
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--ffprobe", default="ffprobe")
     parser.add_argument(
@@ -91,30 +107,18 @@ def parse_args():
         action="store_true",
         help="Replace this run/checkpoint's existing portfolio output directory.",
     )
-    parser.add_argument(
-        "--compose-only",
-        action="store_true",
-        help=(
-            "Reuse an existing completed capture package and transactionally "
-            "replace only its public exports; Isaac Sim is not launched."
-        ),
-    )
     values = parser.parse_args()
     try:
         values.resolution_tuple = parse_resolution(values.resolution)
-        values.seed_sets = {
-            "nominal": parse_seed_spec(values.nominal_seeds),
-            "robust": parse_seed_spec(values.robust_seeds),
-            "adverse": parse_seed_spec(values.adverse_seeds),
-        }
+        values.stories = parse_story_spec(values.stories)
     except ValueError as exc:
         parser.error(str(exc))
     if values.raw_fps <= 0 or values.export_fps <= 0:
         parser.error("Frame rates must be positive")
     if values.playback_speed <= 0.0:
         parser.error("--playback-speed must be positive")
-    if values.compose_only and not values.force:
-        parser.error("--compose-only requires --force to replace existing exports")
+    if values.seed < 0:
+        parser.error("--seed must be non-negative")
     return values
 
 
@@ -214,6 +218,7 @@ def _play_command(
     trajectory_output=None,
     task=None,
     video_length=None,
+    command_limit=None,
 ):
     command = [
         sys.executable,
@@ -240,6 +245,8 @@ def _play_command(
         command.extend(["--task", task])
     if video_length is not None:
         command.extend(["--video_length", str(video_length)])
+    if command_limit is not None:
+        command.extend(["--command-limit", str(command_limit)])
     if trajectory_input:
         command.extend(["--trajectory-input", str(trajectory_input)])
     if trajectory_output:
@@ -273,6 +280,11 @@ def _run_play(args, checkpoint, condition, seed, output, **kwargs):
         raise RuntimeError(f"Capture used the wrong checkpoint: {output}")
     if summary.get("condition") != condition or int(summary.get("seed")) != int(seed):
         raise RuntimeError(f"Capture condition/seed contract failed: {output}")
+    command_limit = kwargs.get("command_limit")
+    if command_limit is not None and int(summary.get("command_limit", -1)) != int(
+        command_limit
+    ):
+        raise RuntimeError(f"Capture command-limit contract failed: {output}")
     return summary
 
 
@@ -388,7 +400,13 @@ def _compose_synchronized_views(ffmpeg, left, right, output, resolution, fps):
     return output
 
 
-def _create_comparison_overlay(path, resolution, playback_speed):
+def _create_comparison_overlay(
+    path,
+    resolution,
+    playback_speed,
+    left_label,
+    right_label,
+):
     """Create a transparent, temporary legend—not a standalone title card."""
 
     width, height = resolution
@@ -400,8 +418,8 @@ def _create_comparison_overlay(path, resolution, playback_speed):
     chip_height = 58
     chip_width = 390
     for left, label, accent in (
-        (margin, "NOMINAL", (70, 211, 124, 255)),
-        (width // 2 + margin, "±20% PHYSICS VARIATION", (68, 196, 224, 255)),
+        (margin, left_label, (70, 211, 124, 255)),
+        (width // 2 + margin, right_label, (68, 196, 224, 255)),
     ):
         draw.rounded_rectangle(
             (left, margin, left + chip_width, margin + chip_height),
@@ -444,7 +462,7 @@ def _compose_physics_variation(
     playback_speed,
     final_hold_seconds,
 ):
-    """Compose complete median-like nominal/variation rollouts side by side."""
+    """Compose complete fixed-seed nominal/variation rollouts side by side."""
 
     width, height = resolution
     half_width = width // 2
@@ -616,46 +634,12 @@ def _load_final_results(run_directory, checkpoint):
     return rows, final_summary
 
 
-def _adverse_selection_target(final_summary):
-    evaluation_directory = final_summary.parent
-    adverse_summary_path = evaluation_directory / "adverse" / "summary.json"
-    adverse_episodes_path = evaluation_directory / "adverse" / "episodes.csv"
-    if not adverse_summary_path.is_file() or not adverse_episodes_path.is_file():
-        raise FileNotFoundError(
-            "Adverse per-episode artifacts are required for representative "
-            f"selection below {evaluation_directory}"
-        )
-    adverse_summary = read_json(adverse_summary_path)
-    step_dt = float(adverse_summary["control_dt_seconds"])
-    with adverse_episodes_path.open("r", encoding="utf-8", newline="") as stream:
-        dropped_rows = [
-            row
-            for row in csv.DictReader(stream)
-            if row["dropped"].strip().lower() in {"1", "true"}
-        ]
-    if not dropped_rows:
-        raise ValueError(
-            f"No dropped episodes were recorded in {adverse_episodes_path}"
-        )
-    return {
-        "commands_completed": median(
-            float(row["commands_completed"]) for row in dropped_rows
-        ),
-        "duration_seconds": median(
-            float(row["episode_length"]) * step_dt for row in dropped_rows
-        ),
-        "dropped_episode_count": len(dropped_rows),
-        "source": str(adverse_episodes_path),
-    }
-
-
-def _localized_captures(state, output_directory):
+def _localized_captures(state, output_directory, stories):
+    capture_plan = portfolio_capture_plan(stories)
     required = {
-        "nominal_hero",
-        "nominal_top",
-        "robust_hero",
-        "adverse_hero",
-        "adverse_side",
+        f"{condition}_{camera}"
+        for condition, cameras in capture_plan.items()
+        for camera in cameras
     }
     recorded = state.get("captures", {})
     missing = required - recorded.keys()
@@ -663,7 +647,7 @@ def _localized_captures(state, output_directory):
         raise ValueError(f"Portfolio manifest is missing captures: {sorted(missing)}")
 
     captures = {}
-    selections = state.get("selections", {})
+    rollouts = state.get("rollouts", {})
     for key in sorted(required):
         expected_condition, expected_camera = key.split("_", maxsplit=1)
         capture = dict(recorded[key])
@@ -685,23 +669,25 @@ def _localized_captures(state, output_directory):
             or capture.get("camera") != expected_camera
         ):
             raise ValueError(f"Capture camera mismatch: {summary_path}")
-        expected_seed = int(selections[expected_condition]["seed"])
+        expected_seed = int(rollouts[expected_condition]["seed"])
         if int(summary.get("seed")) != expected_seed:
             raise ValueError(f"Capture seed mismatch: {summary_path}")
+        expected_limit = PORTFOLIO_COMMAND_LIMITS[expected_condition]
+        if int(summary.get("command_limit", -1)) != expected_limit:
+            raise ValueError(f"Capture command-limit mismatch: {summary_path}")
         if tuple(summary.get("resolution", ())) != tuple(state.get("resolution", ())):
             raise ValueError(f"Capture resolution mismatch: {summary_path}")
         if int(summary.get("raw_fps", 0)) != int(state.get("raw_fps", 0)):
             raise ValueError(f"Capture frame-rate mismatch: {summary_path}")
         captures[key] = capture
 
-    compare_metric_traces(
-        captures["nominal_hero"]["metrics"],
-        captures["nominal_top"]["metrics"],
-    )
-    compare_metric_traces(
-        captures["adverse_hero"]["metrics"],
-        captures["adverse_side"]["metrics"],
-    )
+    for condition, cameras in capture_plan.items():
+        reference = captures[f"{condition}_{cameras[0]}"]["metrics"]
+        for camera in cameras[1:]:
+            compare_metric_traces(
+                reference,
+                captures[f"{condition}_{camera}"]["metrics"],
+            )
     return captures
 
 
@@ -712,18 +698,18 @@ def _compose_public_package(
     output_directory,
     state,
     final_results,
-    composition_mode,
 ):
-    """Build and transactionally install the presentation-only public package."""
+    """Build and transactionally install the declared public stories."""
 
-    selections = state.get("selections", {})
-    if {"nominal", "robust", "adverse"} - selections.keys():
-        raise ValueError("Portfolio manifest does not contain all selected rollouts")
-    captures = _localized_captures(state, output_directory)
-
-    nominal_duration = float(selections["nominal"]["duration_seconds"])
-    robust_duration = float(selections["robust"]["duration_seconds"])
-    adverse_duration = float(selections["adverse"]["duration_seconds"])
+    stories = tuple(state.get("stories", args.stories))
+    capture_plan = portfolio_capture_plan(stories)
+    rollouts = state.get("rollouts", {})
+    missing_rollouts = set(capture_plan) - rollouts.keys()
+    if missing_rollouts:
+        raise ValueError(
+            f"Portfolio manifest is missing rollouts: {sorted(missing_rollouts)}"
+        )
+    captures = _localized_captures(state, output_directory, stories)
     final_hold = PORTFOLIO_FINAL_HOLD_SECONDS
 
     with tempfile.TemporaryDirectory(
@@ -736,103 +722,105 @@ def _compose_public_package(
         intermediate.mkdir()
         exports.mkdir()
 
-        nominal_views = _compose_synchronized_views(
-            ffmpeg,
-            captures["nominal_hero"]["raw_video"],
-            captures["nominal_top"]["raw_video"],
-            intermediate / "nominal_oblique_top.mp4",
-            args.resolution_tuple,
-            args.raw_fps,
-        )
-        nominal_annotated = _run_annotation(
-            args,
-            ffmpeg,
-            captures["nominal_hero"],
-            intermediate / "dice_nominal_success.mp4",
-            "technical",
-            final_hold,
-            video=nominal_views,
-            view_labels=("Oblique", "Top view"),
-        )
-        nominal_export = exports / "dice_nominal_success.mp4"
-        shutil.copy2(nominal_annotated, nominal_export)
+        videos = []
+        expected_durations = {}
+        poster_fractions = {}
+        for story_name in stories:
+            story = PORTFOLIO_STORIES[story_name]
+            panels = story["panels"]
+            video = exports / story["filename"]
 
-        adverse_views = _compose_synchronized_views(
-            ffmpeg,
-            captures["adverse_hero"]["raw_video"],
-            captures["adverse_side"]["raw_video"],
-            intermediate / "adverse_oblique_side.mp4",
-            args.resolution_tuple,
-            args.raw_fps,
-        )
-        adverse_annotated = _run_annotation(
-            args,
-            ffmpeg,
-            captures["adverse_hero"],
-            intermediate / "dice_adverse_boundary.mp4",
-            "stress",
-            final_hold,
-            video=adverse_views,
-            view_labels=("Oblique", "Side view"),
-        )
-        adverse_export = exports / "dice_adverse_boundary.mp4"
-        shutil.copy2(adverse_annotated, adverse_export)
+            if story["layout"] == "synchronized":
+                if len(panels) != 2:
+                    raise ValueError(
+                        f"Synchronized story '{story_name}' must declare two panels"
+                    )
+                left = captures[f"{panels[0]['condition']}_{panels[0]['camera']}"]
+                right = captures[f"{panels[1]['condition']}_{panels[1]['camera']}"]
+                synchronized = _compose_synchronized_views(
+                    ffmpeg,
+                    left["raw_video"],
+                    right["raw_video"],
+                    intermediate / f"{story_name}_views.mp4",
+                    args.resolution_tuple,
+                    args.raw_fps,
+                )
+                telemetry_condition = story["telemetry_condition"]
+                telemetry_panel = next(
+                    panel
+                    for panel in panels
+                    if panel["condition"] == telemetry_condition
+                )
+                _run_annotation(
+                    args,
+                    ffmpeg,
+                    captures[f"{telemetry_condition}_{telemetry_panel['camera']}"],
+                    video,
+                    story["hud_style"],
+                    final_hold,
+                    video=synchronized,
+                    view_labels=tuple(panel["label"] for panel in panels),
+                )
+                simulation_duration = float(
+                    rollouts[telemetry_condition]["duration_seconds"]
+                )
+                expected_duration = (
+                    simulation_duration / args.playback_speed + final_hold
+                )
+            elif story["layout"] == "comparison":
+                if len(panels) != 2:
+                    raise ValueError(
+                        f"Comparison story '{story_name}' must declare two panels"
+                    )
+                normalized = []
+                durations = []
+                for index, panel in enumerate(panels):
+                    capture = captures[f"{panel['condition']}_{panel['camera']}"]
+                    normalized.append(
+                        _run_annotation(
+                            args,
+                            ffmpeg,
+                            capture,
+                            intermediate / f"{story_name}_source_{index}.mp4",
+                            "none",
+                            0.0,
+                            playback_speed=1.0,
+                            output_fps=args.raw_fps,
+                        )
+                    )
+                    durations.append(
+                        float(rollouts[panel["condition"]]["duration_seconds"])
+                    )
+                overlay = _create_comparison_overlay(
+                    intermediate / f"{story_name}_overlay.png",
+                    args.resolution_tuple,
+                    args.playback_speed,
+                    panels[0]["label"],
+                    panels[1]["label"],
+                )
+                _compose_physics_variation(
+                    ffmpeg,
+                    normalized[0],
+                    normalized[1],
+                    overlay,
+                    video,
+                    durations[0],
+                    durations[1],
+                    args.resolution_tuple,
+                    args.export_fps,
+                    args.playback_speed,
+                    final_hold,
+                )
+                expected_duration = max(durations) / args.playback_speed + final_hold
+            else:
+                raise ValueError(
+                    f"Unsupported story layout '{story['layout']}' for {story_name}"
+                )
 
-        # Normalize the two comparison sources through the strict telemetry
-        # aligner. Style "none" leaves pixels untouched while restoring the
-        # terminal frame that MoviePy may omit at the encoding boundary.
-        nominal_comparison_source = _run_annotation(
-            args,
-            ffmpeg,
-            captures["nominal_hero"],
-            intermediate / "nominal_comparison_source.mp4",
-            "none",
-            0.0,
-            playback_speed=1.0,
-            output_fps=args.raw_fps,
-        )
-        robust_comparison_source = _run_annotation(
-            args,
-            ffmpeg,
-            captures["robust_hero"],
-            intermediate / "robust_comparison_source.mp4",
-            "none",
-            0.0,
-            playback_speed=1.0,
-            output_fps=args.raw_fps,
-        )
-        comparison_overlay = _create_comparison_overlay(
-            intermediate / "physics_variation_overlay.png",
-            args.resolution_tuple,
-            args.playback_speed,
-        )
-        variation_export = _compose_physics_variation(
-            ffmpeg,
-            nominal_comparison_source,
-            robust_comparison_source,
-            comparison_overlay,
-            exports / "dice_physics_variation.mp4",
-            nominal_duration,
-            robust_duration,
-            args.resolution_tuple,
-            args.export_fps,
-            args.playback_speed,
-            final_hold,
-        )
+            videos.append(video)
+            expected_durations[video.name] = expected_duration
+            poster_fractions[video.name] = float(story["poster_fraction"])
 
-        videos = [nominal_export, variation_export, adverse_export]
-        expected_durations = {
-            nominal_export.name: nominal_duration / args.playback_speed + final_hold,
-            variation_export.name: max(nominal_duration, robust_duration)
-            / args.playback_speed
-            + final_hold,
-            adverse_export.name: adverse_duration / args.playback_speed + final_hold,
-        }
-        poster_fractions = {
-            nominal_export.name: 0.50,
-            variation_export.name: 0.50,
-            adverse_export.name: 0.68,
-        }
         export_metadata = []
         posters = []
         for video in videos:
@@ -869,8 +857,9 @@ def _compose_public_package(
 
         captions = build_portfolio_captions(
             final_results,
-            selections,
+            rollouts,
             playback_speed=args.playback_speed,
+            stories=stories,
         )
         caption_paths = []
         for filename, markdown in captions.items():
@@ -913,8 +902,8 @@ def _compose_public_package(
         {
             "status": "complete",
             "finished_at": datetime.now().astimezone().isoformat(),
-            "presentation_revision": 2,
-            "composition_mode": composition_mode,
+            "presentation_revision": 3,
+            "composition_mode": "fresh_end_to_end",
             "playback_speed": args.playback_speed,
             "final_hold_seconds": final_hold,
             "phases": [
@@ -963,7 +952,7 @@ def _compose_public_package(
     state.pop("camera_contact_sheet", None)
     write_json(output_directory / "manifest.json", state)
 
-    print("\n[DICE PORTFOLIO] Presentation revision 2 complete", flush=True)
+    print("\n[DICE PORTFOLIO] Presentation revision 3 complete", flush=True)
     for metadata in destination_metadata:
         print(
             f"  {metadata['path']}  {metadata['duration_seconds']:.2f}s  "
@@ -982,11 +971,7 @@ def main():
     args = parse_args()
     ffmpeg = _resolve_executable(args.ffmpeg, "ffmpeg")
     ffprobe = _resolve_executable(args.ffprobe, "ffprobe")
-    _verify_video_toolchain(
-        ffmpeg,
-        args.webm,
-        capture_required=not args.compose_only,
-    )
+    _verify_video_toolchain(ffmpeg, args.webm, capture_required=True)
     run_directory = resolve_run_directory(args.run, args.outputs_root)
     checkpoint = Path(args.checkpoint).expanduser()
     if not checkpoint.is_absolute():
@@ -999,42 +984,6 @@ def main():
     output_root = Path(args.output_root).expanduser().resolve()
     output_directory = output_root / f"{run_directory.name}_{checkpoint.stem}"
     expected_name = f"{run_directory.name}_{checkpoint.stem}"
-    if args.compose_only:
-        state_path = output_directory / "manifest.json"
-        if not state_path.is_file():
-            raise FileNotFoundError(
-                f"Composition-only mode requires an existing manifest: {state_path}"
-            )
-        state = read_json(state_path)
-        if state.get("status") != "complete":
-            raise ValueError(f"Existing portfolio is not complete: {state_path}")
-        if state.get("checkpoint_sha256") != sha256_file(checkpoint):
-            raise ValueError(
-                "Existing portfolio checkpoint does not match --checkpoint"
-            )
-        if tuple(state.get("resolution", ())) != tuple(args.resolution_tuple):
-            raise ValueError(
-                "Composition resolution must match the completed captures: "
-                f"{state.get('resolution')} != {list(args.resolution_tuple)}"
-            )
-        if int(state.get("raw_fps", 0)) != args.raw_fps:
-            raise ValueError(
-                "--raw-fps must match the completed captures: "
-                f"{state.get('raw_fps')} != {args.raw_fps}"
-            )
-        state["recomposed_at"] = datetime.now().astimezone().isoformat()
-        _compose_public_package(
-            args,
-            ffmpeg,
-            ffprobe,
-            output_directory,
-            state,
-            final_results,
-            composition_mode="compose_only",
-        )
-        return
-
-    adverse_selection_target = _adverse_selection_target(final_results_source)
     if output_directory.exists():
         if not args.force:
             raise FileExistsError(
@@ -1062,8 +1011,15 @@ def main():
         "resolution": list(args.resolution_tuple),
         "raw_fps": args.raw_fps,
         "export_fps": args.export_fps,
-        "seed_candidates": args.seed_sets,
-        "adverse_selection_target": adverse_selection_target,
+        "playback_speed": args.playback_speed,
+        "seed": args.seed,
+        "seed_policy": "one fixed seed; no seed search or selection",
+        "stories": list(args.stories),
+        "capture_plan": {
+            condition: list(cameras)
+            for condition, cameras in portfolio_capture_plan(args.stories).items()
+        },
+        "command_limits": PORTFOLIO_COMMAND_LIMITS,
         "git": _git_metadata(),
         "software": {
             "python": sys.version,
@@ -1089,7 +1045,7 @@ def main():
                 args,
                 checkpoint,
                 "nominal",
-                7,
+                args.seed,
                 audit_root / "stock",
                 no_video=True,
                 task="DICE-Shadow-Eval-v0",
@@ -1099,7 +1055,7 @@ def main():
                 args,
                 checkpoint,
                 "nominal",
-                7,
+                args.seed,
                 audit_root / "numbered",
                 no_video=True,
                 video_length=1,
@@ -1118,76 +1074,80 @@ def main():
         state["phases"].append("physics_audit")
         write_json(state_path, state)
 
-        scout_summaries = {}
-        selections = {}
-        for condition, seeds in args.seed_sets.items():
-            condition_summaries = []
-            for seed in seeds:
-                scout_directory = (
-                    output_directory / "scout" / condition / f"seed_{seed}"
-                )
-                summary = _run_play(
-                    args,
-                    checkpoint,
-                    condition,
-                    seed,
-                    scout_directory,
-                    no_video=True,
-                    trajectory_output=scout_directory / "trajectory.npz",
-                )
-                condition_summaries.append(summary)
-            scout_summaries[condition] = condition_summaries
-            selection_kwargs = {}
-            if condition == "adverse":
-                selection_kwargs = {
-                    "adverse_target_commands": adverse_selection_target[
-                        "commands_completed"
-                    ],
-                    "adverse_target_duration_seconds": adverse_selection_target[
-                        "duration_seconds"
-                    ],
-                }
-            selections[condition] = select_representative_scout(
-                condition,
-                condition_summaries,
-                **selection_kwargs,
-            )
-        state["scout_summaries"] = scout_summaries
-        state["selections"] = selections
-        state["phases"].append("representative_selection")
-        write_json(state_path, state)
-
-        capture_plan = {
-            "nominal": ("hero", "top", "side"),
-            "robust": ("hero",),
-            "adverse": ("hero", "side"),
-        }
+        capture_plan = portfolio_capture_plan(args.stories)
+        rollouts = {}
         captures = {}
         trace_checks = {}
         for condition, cameras in capture_plan.items():
-            selected = selections[condition]
-            seed = int(selected["seed"])
-            for camera in cameras:
+            command_limit = PORTFOLIO_COMMAND_LIMITS[condition]
+            primary_camera = cameras[0]
+            primary_directory = (
+                output_directory
+                / "captures"
+                / condition
+                / f"seed_{args.seed}"
+                / primary_camera
+            )
+            trajectory = primary_directory / "trajectory.npz"
+            primary = _run_play(
+                args,
+                checkpoint,
+                condition,
+                args.seed,
+                primary_directory,
+                camera=primary_camera,
+                trajectory_output=trajectory,
+                command_limit=command_limit,
+            )
+            if condition in {"nominal", "robust"} and (
+                primary.get("outcome") != "completed_sequence"
+                or int(primary.get("commands_completed", -1)) != command_limit
+                or bool(primary.get("dropped"))
+            ):
+                raise RuntimeError(
+                    f"Fixed seed {args.seed} did not complete the required "
+                    f"{command_limit}-command {condition} rollout"
+                )
+            if condition == "adverse" and primary.get("outcome") != "dropped":
+                raise RuntimeError(
+                    f"Fixed seed {args.seed} did not reach the adverse drop "
+                    "within the declared horizon; no alternate seed was searched"
+                )
+
+            rollouts[condition] = primary
+            primary_key = f"{condition}_{primary_camera}"
+            captures[primary_key] = primary
+            trace_checks[primary_key] = {
+                "status": "reference_capture",
+                "rows": int(primary["steps"]),
+            }
+            for camera in cameras[1:]:
                 capture_directory = (
-                    output_directory / "captures" / condition / f"seed_{seed}" / camera
+                    output_directory
+                    / "captures"
+                    / condition
+                    / f"seed_{args.seed}"
+                    / camera
                 )
                 summary = _run_play(
                     args,
                     checkpoint,
                     condition,
-                    seed,
+                    args.seed,
                     capture_directory,
                     camera=camera,
-                    trajectory_input=selected["trajectory"],
+                    trajectory_input=trajectory,
+                    command_limit=command_limit,
                 )
                 key = f"{condition}_{camera}"
                 captures[key] = summary
                 trace_checks[key] = compare_metric_traces(
-                    selected["metrics"], summary["metrics"]
+                    primary["metrics"], summary["metrics"]
                 )
+        state["rollouts"] = rollouts
         state["captures"] = captures
         state["trace_checks"] = trace_checks
-        state["phases"].append("camera_capture")
+        state["phases"].append("fixed_seed_capture")
         write_json(state_path, state)
 
         _compose_public_package(
@@ -1197,7 +1157,6 @@ def main():
             output_directory,
             state,
             final_results,
-            composition_mode="full_capture",
         )
         return
 
