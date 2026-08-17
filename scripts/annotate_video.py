@@ -170,13 +170,10 @@ def _annotate_frame(
         margin + panel_height,
     )
     _panel(draw, condition_box, radius)
-    displayed_condition = condition_label
-    if playback_speed != 1.0:
-        displayed_condition += f"  ·  {playback_speed:g}x PLAYBACK"
     _text(
         draw,
         (condition_box[0] + round(22 * scale), condition_box[1] + round(20 * scale)),
-        displayed_condition,
+        condition_label,
         fonts["small_bold"],
         fill=(176, 185, 198, 255),
     )
@@ -187,6 +184,32 @@ def _annotate_frame(
         fonts["body_bold"],
         fill=STATUS_COLORS.get(status, STATUS_COLORS["rotating"]),
     )
+
+    # Playback speed is editorial metadata, not part of the physical condition.
+    # Keep it in a dedicated compact chip so long condition labels (especially
+    # the adverse case) never collide with or clip the condition/status panel.
+    if playback_speed != 1.0:
+        speed_width = round(220 * scale)
+        speed_height = round(50 * scale)
+        speed_right = condition_box[0] - gap
+        speed_box = (
+            speed_right - speed_width,
+            margin,
+            speed_right,
+            margin + speed_height,
+        )
+        _panel(draw, speed_box, round(12 * scale), fill=(15, 20, 28, 185))
+        _text(
+            draw,
+            (
+                speed_box[0] + speed_width // 2,
+                speed_box[1] + speed_height // 2,
+            ),
+            f"{playback_speed:g}× PLAYBACK",
+            fonts["tiny_bold"],
+            fill=(218, 224, 232, 255),
+            anchor="mm",
+        )
 
     # Camera labels describe synchronized panels without duplicating the HUD.
     if view_labels:
@@ -218,7 +241,7 @@ def _annotate_frame(
     chip_specs = (
         (round(285 * scale), f"COMMANDS  {commands}", fonts["body_bold"]),
         (round(245 * scale), f"TOP FACE  {top}", fonts["body_bold"]),
-        (round(350 * scale), f"FACE ERROR  {angle:4.1f} deg", fonts["body"]),
+        (round(330 * scale), f"FACE ERROR  {angle:4.1f}°", fonts["body"]),
     )
     total_chip_width = sum(item[0] for item in chip_specs) + gap * (len(chip_specs) - 1)
     chip_left = (width - total_chip_width) // 2
@@ -244,39 +267,39 @@ def _annotate_frame(
     # A narrow 20-segment rail is easier to read than a screen-wide progress
     # bar. On synchronized views it sits on the divider, leaving both subjects
     # unobstructed. The confirmed state is held by the existing status timeline.
-    rail_width = round(106 * scale)
-    rail_height = round(354 * scale)
+    rail_width = round(84 * scale)
+    rail_height = round(292 * scale)
     rail_center_x = width // 2 if view_labels else width - margin - rail_width // 2
-    rail_top = margin + panel_height + round(92 * scale)
+    rail_top = margin + panel_height + round(104 * scale)
     rail_box = (
         rail_center_x - rail_width // 2,
         rail_top,
         rail_center_x + rail_width // 2,
         rail_top + rail_height,
     )
-    _panel(draw, rail_box, round(14 * scale), fill=(15, 20, 28, 205))
+    _panel(draw, rail_box, round(13 * scale), fill=(15, 20, 28, 172))
     visual_hold = 1.0 if status == "confirmed" else hold
     hold_steps = max(0, min(20, round(20 * visual_hold)))
     _text(
         draw,
-        (rail_center_x, rail_box[1] + round(27 * scale)),
+        (rail_center_x, rail_box[1] + round(24 * scale)),
         "HOLD",
-        fonts["small_bold"],
+        fonts["tiny_bold"],
         fill=(218, 224, 232, 255),
         anchor="mm",
     )
     _text(
         draw,
-        (rail_center_x, rail_box[1] + round(61 * scale)),
+        (rail_center_x, rail_box[1] + round(52 * scale)),
         f"{hold_steps:02d}/20",
-        fonts["small_bold"],
+        fonts["tiny_bold"],
         fill=STATUS_COLORS.get(status, STATUS_COLORS["holding"]),
         anchor="mm",
     )
-    segment_gap = max(1, round(3 * scale))
-    segment_height = max(2, round(9 * scale))
-    segment_width = round(43 * scale)
-    segments_bottom = rail_box[3] - round(20 * scale)
+    segment_gap = max(1, round(2 * scale))
+    segment_height = max(2, round(7 * scale))
+    segment_width = round(32 * scale)
+    segments_bottom = rail_box[3] - round(15 * scale)
     active_color = STATUS_COLORS.get(status, STATUS_COLORS["holding"])
     if status == "rotating":
         active_color = STATUS_COLORS["holding"]
@@ -290,8 +313,8 @@ def _annotate_frame(
         )
         draw.rounded_rectangle(
             segment_box,
-            radius=max(1, round(3 * scale)),
-            fill=active_color if segment < hold_steps else (62, 69, 79, 225),
+            radius=max(1, round(2 * scale)),
+            fill=active_color if segment < hold_steps else (62, 69, 79, 190),
         )
 
     composed = Image.alpha_composite(base, overlay).convert("RGB")
@@ -366,6 +389,7 @@ def annotate_video(
 
     scale = height / 1080.0
     fonts = {
+        "tiny_bold": _load_font(max(14, round(20 * scale)), True, font_path),
         "small_bold": _load_font(max(16, round(25 * scale)), True, font_path),
         "body": _load_font(max(18, round(31 * scale)), False, font_path),
         "body_bold": _load_font(max(18, round(33 * scale)), True, font_path),

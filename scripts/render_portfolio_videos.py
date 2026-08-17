@@ -18,7 +18,9 @@ from PIL import Image, ImageDraw, ImageFont, features as pillow_features
 from dicedial.checkpoint_sweep import resolve_run_directory
 from dicedial.portfolio_video import (
     EXPORT_FPS,
+    PORTFOLIO_ADVERSE_FACE_SEQUENCE,
     PORTFOLIO_COMMAND_LIMITS,
+    PORTFOLIO_FACE_SEQUENCE,
     PORTFOLIO_FINAL_HOLD_SECONDS,
     PORTFOLIO_PLAYBACK_SPEED,
     PORTFOLIO_SCHEMA_VERSION,
@@ -32,9 +34,11 @@ from dicedial.portfolio_video import (
     parse_story_spec,
     portfolio_capture_plan,
     probe_portfolio_video,
+    read_metric_rows,
     read_json,
     resolve_portfolio_artifact,
     sha256_file,
+    select_story_poster_time,
     write_json,
 )
 
@@ -46,7 +50,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Capture and compose the DICE portfolio package end to end from "
-            "one completed run and one fixed seed."
+            "one completed run and one fixed representative seed."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -75,7 +79,7 @@ def parse_args():
         "--seed",
         type=int,
         default=PORTFOLIO_SEED,
-        help="One fixed seed used for every requested portfolio condition.",
+        help="Representative seed fixed across every requested portfolio condition.",
     )
     parser.add_argument(
         "--stories",
@@ -406,6 +410,7 @@ def _create_comparison_overlay(
     playback_speed,
     left_label,
     right_label,
+    shared_label,
 ):
     """Create a transparent, temporary legend—not a standalone title card."""
 
@@ -416,11 +421,14 @@ def _create_comparison_overlay(
     small_font = _font(23, True)
     margin = 42
     chip_height = 58
-    chip_width = 390
+    half_width = width // 2
+    max_chip_width = half_width - 2 * margin
     for left, label, accent in (
         (margin, left_label, (70, 211, 124, 255)),
-        (width // 2 + margin, right_label, (68, 196, 224, 255)),
+        (half_width + margin, right_label, (68, 196, 224, 255)),
     ):
+        text_box = draw.textbbox((0, 0), label, font=font)
+        chip_width = min(max_chip_width, text_box[2] - text_box[0] + 40)
         draw.rounded_rectangle(
             (left, margin, left + chip_width, margin + chip_height),
             radius=14,
@@ -429,7 +437,33 @@ def _create_comparison_overlay(
             width=1,
         )
         draw.text((left + 20, margin + 12), label, font=font, fill=accent)
-    speed_text = f"{playback_speed:g}x PLAYBACK"
+
+    shared_box = draw.textbbox((0, 0), shared_label, font=small_font)
+    shared_width = shared_box[2] - shared_box[0] + 40
+    shared_height = 50
+    shared_left = (width - shared_width) // 2
+    shared_top = margin + chip_height + 16
+    draw.rounded_rectangle(
+        (
+            shared_left,
+            shared_top,
+            shared_left + shared_width,
+            shared_top + shared_height,
+        ),
+        radius=12,
+        fill=(15, 20, 28, 190),
+        outline=(255, 255, 255, 32),
+        width=1,
+    )
+    draw.text(
+        (width // 2, shared_top + shared_height // 2),
+        shared_label,
+        font=small_font,
+        fill=(226, 232, 240, 255),
+        anchor="mm",
+    )
+
+    speed_text = f"{playback_speed:g}× PLAYBACK"
     speed_box = (
         width - margin - 260,
         height - margin - 54,
@@ -724,7 +758,7 @@ def _compose_public_package(
 
         videos = []
         expected_durations = {}
-        poster_fractions = {}
+        poster_plans = {}
         for story_name in stories:
             story = PORTFOLIO_STORIES[story_name]
             panels = story["panels"]
@@ -797,6 +831,7 @@ def _compose_public_package(
                     args.playback_speed,
                     panels[0]["label"],
                     panels[1]["label"],
+                    story["shared_label"],
                 )
                 _compose_physics_variation(
                     ffmpeg,
@@ -819,7 +854,19 @@ def _compose_public_package(
 
             videos.append(video)
             expected_durations[video.name] = expected_duration
-            poster_fractions[video.name] = float(story["poster_fraction"])
+            story_telemetry = {}
+            for panel in panels:
+                condition = panel["condition"]
+                if condition in story_telemetry:
+                    continue
+                story_telemetry[condition] = read_metric_rows(
+                    captures[f"{condition}_{panel['camera']}"]["metrics"]
+                )
+            poster_plans[video.name] = select_story_poster_time(
+                story_name,
+                story_telemetry,
+                playback_speed=args.playback_speed,
+            )
 
         export_metadata = []
         posters = []
@@ -842,15 +889,20 @@ def _compose_public_package(
                 {
                     "playback_speed": args.playback_speed,
                     "expected_duration_seconds": expected,
+                    "poster_selection": poster_plans[video.name],
                 }
             )
             export_metadata.append(metadata)
             poster = exports / f"{video.stem}_poster.webp"
+            poster_time = min(
+                poster_plans[video.name]["video_time_seconds"],
+                max(0.0, metadata["duration_seconds"] - 1.0 / args.export_fps),
+            )
             _extract_image(
                 ffmpeg,
                 video,
                 poster,
-                metadata["duration_seconds"] * poster_fractions[video.name],
+                poster_time,
                 webp=True,
             )
             posters.append(poster)
@@ -902,7 +954,7 @@ def _compose_public_package(
         {
             "status": "complete",
             "finished_at": datetime.now().astimezone().isoformat(),
-            "presentation_revision": 3,
+            "presentation_revision": 4,
             "composition_mode": "fresh_end_to_end",
             "playback_speed": args.playback_speed,
             "final_hold_seconds": final_hold,
@@ -952,7 +1004,7 @@ def _compose_public_package(
     state.pop("camera_contact_sheet", None)
     write_json(output_directory / "manifest.json", state)
 
-    print("\n[DICE PORTFOLIO] Presentation revision 3 complete", flush=True)
+    print("\n[DICE PORTFOLIO] Presentation revision 4 complete", flush=True)
     for metadata in destination_metadata:
         print(
             f"  {metadata['path']}  {metadata['duration_seconds']:.2f}s  "
@@ -1013,7 +1065,15 @@ def main():
         "export_fps": args.export_fps,
         "playback_speed": args.playback_speed,
         "seed": args.seed,
-        "seed_policy": "one fixed seed; no seed search or selection",
+        "seed_policy": (
+            "representative presentation seed fixed before this render; "
+            "aggregate claims come from the completed final evaluation"
+        ),
+        "face_sequences": {
+            "nominal": list(PORTFOLIO_FACE_SEQUENCE),
+            "robust": list(PORTFOLIO_FACE_SEQUENCE),
+            "adverse": list(PORTFOLIO_ADVERSE_FACE_SEQUENCE),
+        },
         "stories": list(args.stories),
         "capture_plan": {
             condition: list(cameras)
@@ -1111,7 +1171,8 @@ def main():
             if condition == "adverse" and primary.get("outcome") != "dropped":
                 raise RuntimeError(
                     f"Fixed seed {args.seed} did not reach the adverse drop "
-                    "within the declared horizon; no alternate seed was searched"
+                    "within the declared horizon; inspect the representative "
+                    "capture rather than silently substituting another seed"
                 )
 
             rollouts[condition] = primary

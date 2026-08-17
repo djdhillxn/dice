@@ -100,10 +100,11 @@ train_rsl.py
 The portfolio coordinator reuses `play_rsl.py` and `annotate_video.py`; it does
 not implement a second policy-loading or simulation path. Presentation-only
 environment variants use the numbered die under nominal, symmetric held-out,
-and fixed adverse physics. One fixed seed is used directly—there is no seed
-search. The primary action trajectory for each condition is replayed across the
-required camera presets and their task-event traces must match before
-composition.
+and fixed adverse physics. Representative seed `9` is fixed across the final
+presentation package; the videos are illustrative, while aggregate claims come
+from the completed final evaluation. The primary action trajectory for each
+condition is replayed across the required camera presets and their task-event
+traces must match before composition.
 The public presentation keeps the original 60 FPS captures as provenance and
 exports 30 FPS footage at 0.5× playback. Nominal and adverse evidence use two
 synchronized full-height views with one shared compact HUD; the physics-shift

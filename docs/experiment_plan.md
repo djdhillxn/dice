@@ -97,7 +97,8 @@ shown at 0.5× playback, without static title/result cards, and each export has
 a copy-ready Markdown companion. It is generated from the frozen
 `model_4000.pt` checkpoint by `scripts/render_portfolio_videos.py`. Rendering
 does not alter or extend the completed quantitative evaluation. One fixed seed
-is used without search; nominal and symmetric variation run for 12 confirmed
-commands, while the adverse story continues to its drop. Physics audit,
+(`9`) is used consistently for the final representative videos; it is not the
+source of the aggregate performance claims. Nominal and symmetric variation run
+for 12 confirmed commands, while the adverse story continues to its drop. Physics audit,
 trajectory replay, encoding, and GitHub Pages requirements are defined in
 [video_rendering.md](video_rendering.md).

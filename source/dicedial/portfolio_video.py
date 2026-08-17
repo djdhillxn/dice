@@ -17,6 +17,8 @@ EXPORT_FPS = 30
 PORTFOLIO_PLAYBACK_SPEED = 0.5
 PORTFOLIO_FINAL_HOLD_SECONDS = 0.75
 PORTFOLIO_SEED = 9
+PORTFOLIO_FACE_SEQUENCE = (1, 6, 3, 5, 2, 4, 6, 2, 5, 1, 3, 4)
+PORTFOLIO_ADVERSE_FACE_SEQUENCE = (1, 6, 3, 5, 2, 4)
 PRESENTATION_COLLISION_EXTENT_M = (0.060, 0.060, 0.060)
 PRESENTATION_MASS_KG = 0.216
 
@@ -77,7 +79,11 @@ PORTFOLIO_STORIES = {
         ),
         "telemetry_condition": "nominal",
         "hud_style": "technical",
-        "poster_fraction": 0.50,
+        "poster": {
+            "strategy": "confirmed_command",
+            "command": 8,
+            "confirmation_offset_seconds": 0.16,
+        },
     },
     "physics_variation": {
         "key": "physics_variation",
@@ -88,10 +94,14 @@ PORTFOLIO_STORIES = {
             {
                 "condition": "robust",
                 "camera": "hero",
-                "label": "±20% PHYSICS VARIATION",
+                "label": "HELD-OUT ±20% MASS / FRICTION",
             },
         ),
-        "poster_fraction": 0.50,
+        "shared_label": "SAME POLICY · SAME FACE SEQUENCE",
+        "poster": {
+            "strategy": "shared_command_interval",
+            "commands_completed": 7,
+        },
     },
     "adverse_boundary": {
         "key": "adverse_boundary",
@@ -103,7 +113,10 @@ PORTFOLIO_STORIES = {
         ),
         "telemetry_condition": "adverse",
         "hud_style": "stress",
-        "poster_fraction": 0.68,
+        "poster": {
+            "strategy": "pre_drop",
+            "lead_seconds": 0.25,
+        },
     },
 }
 
@@ -196,6 +209,167 @@ def portfolio_capture_plan(stories):
             if panel["camera"] not in cameras:
                 cameras.append(panel["camera"])
     return {condition: tuple(cameras) for condition, cameras in plan.items()}
+
+
+def _metric_integer(row, key, default=0):
+    return int(float(row.get(key, default)))
+
+
+def _metric_number(row, key, default=0.0):
+    return float(row.get(key, default))
+
+
+def _command_interval(rows, commands_completed):
+    times = [
+        _metric_number(row, "sim_time_seconds")
+        for row in rows
+        if _metric_integer(row, "commands_completed") == commands_completed
+        and not _metric_integer(row, "drop")
+    ]
+    if not times:
+        return None
+    return min(times), max(times)
+
+
+def select_story_poster_time(
+    story_name,
+    telemetry_by_condition,
+    playback_speed=PORTFOLIO_PLAYBACK_SPEED,
+):
+    """Select an event-aware poster time from rollout telemetry.
+
+    The public poster should explain the story before the user presses play.  A
+    fixed fractional timestamp is therefore deliberately avoided: nominal uses
+    a confirmed command in the second six-face permutation, the physics
+    comparison uses a shared active-command interval, and adverse uses the
+    final stable instant immediately before the recorded drop.
+    """
+
+    if playback_speed <= 0.0:
+        raise ValueError("Playback speed must be positive")
+    if story_name not in PORTFOLIO_STORIES:
+        raise ValueError(f"Unknown portfolio story: {story_name}")
+
+    story = PORTFOLIO_STORIES[story_name]
+    poster = story["poster"]
+    strategy = poster["strategy"]
+
+    if strategy == "confirmed_command":
+        condition = story["telemetry_condition"]
+        rows = telemetry_by_condition.get(condition, ())
+        command = int(poster["command"])
+        matches = [
+            row
+            for row in rows
+            if _metric_integer(row, "success") == 1
+            and _metric_integer(row, "commands_completed") == command
+        ]
+        if not matches:
+            raise ValueError(
+                f"Could not select poster for {story_name}: command {command} "
+                "was never confirmed"
+            )
+        source_time = _metric_number(matches[0], "sim_time_seconds") + float(
+            poster.get("confirmation_offset_seconds", 0.0)
+        )
+        if rows:
+            source_time = min(
+                source_time,
+                _metric_number(rows[-1], "sim_time_seconds"),
+            )
+        detail = {"condition": condition, "command": command}
+
+    elif strategy == "shared_command_interval":
+        conditions = tuple(
+            dict.fromkeys(panel["condition"] for panel in story["panels"])
+        )
+        missing = [
+            condition
+            for condition in conditions
+            if condition not in telemetry_by_condition
+        ]
+        if missing:
+            raise ValueError(
+                f"Could not select poster for {story_name}: missing telemetry {missing}"
+            )
+        preferred = int(poster["commands_completed"])
+        maxima = [
+            max(
+                (
+                    _metric_integer(row, "commands_completed")
+                    for row in telemetry_by_condition[condition]
+                ),
+                default=0,
+            )
+            for condition in conditions
+        ]
+        maximum_common = min(maxima)
+        candidates = sorted(
+            range(maximum_common + 1),
+            key=lambda value: (abs(value - preferred), -value),
+        )
+        selected = None
+        best_overlap = None
+        for commands_completed in candidates:
+            intervals = [
+                _command_interval(telemetry_by_condition[condition], commands_completed)
+                for condition in conditions
+            ]
+            if any(interval is None for interval in intervals):
+                continue
+            overlap_start = max(interval[0] for interval in intervals)
+            overlap_end = min(interval[1] for interval in intervals)
+            if overlap_end < overlap_start:
+                continue
+            overlap = overlap_end - overlap_start
+            candidate = (
+                overlap,
+                -abs(commands_completed - preferred),
+                commands_completed,
+            )
+            if best_overlap is None or candidate > best_overlap:
+                best_overlap = candidate
+                selected = (commands_completed, overlap_start, overlap_end)
+            if commands_completed == preferred and overlap >= 0.08:
+                break
+        if selected is None:
+            raise ValueError(
+                f"Could not find a shared command interval for {story_name}"
+            )
+        commands_completed, overlap_start, overlap_end = selected
+        source_time = 0.5 * (overlap_start + overlap_end)
+        detail = {
+            "conditions": list(conditions),
+            "commands_completed": commands_completed,
+            "overlap_seconds": overlap_end - overlap_start,
+        }
+
+    elif strategy == "pre_drop":
+        condition = story["telemetry_condition"]
+        rows = telemetry_by_condition.get(condition, ())
+        drops = [row for row in rows if _metric_integer(row, "drop") == 1]
+        if not drops:
+            raise ValueError(
+                f"Could not select poster for {story_name}: no drop was recorded"
+            )
+        drop_time = _metric_number(drops[0], "sim_time_seconds")
+        lead_seconds = float(poster.get("lead_seconds", 0.25))
+        source_time = max(0.0, drop_time - lead_seconds)
+        detail = {
+            "condition": condition,
+            "drop_time_seconds": drop_time,
+            "lead_seconds": lead_seconds,
+        }
+
+    else:
+        raise ValueError(f"Unsupported poster strategy '{strategy}' for {story_name}")
+
+    return {
+        "strategy": strategy,
+        "simulation_time_seconds": source_time,
+        "video_time_seconds": source_time / playback_speed,
+        **detail,
+    }
 
 
 def presentation_duration(
@@ -291,12 +465,15 @@ The requested die face is supplied as a semantic command to one deterministic
 same action trajectory, allowing the manipulation and upward-facing result to
 be checked together.
 
-- **Fixed rollout:** seed {int(nominal["seed"])}, used directly without seed search or cherry-picking
+- **Representative rollout:** seed {int(nominal["seed"])}, fixed across the final presentation package
 - **Rollout result:** {int(nominal["commands_completed"])} commands in {float(nominal["duration_seconds"]):.2f} simulation seconds, with no drop
 - **Final evaluation:** {percent("nominal", "issued_command_completion_rate"):.2f}% issued-command completion, {percent("nominal", "drop_rate"):.2f}% episode drop rate, {float(final_results["nominal"]["mean_consecutive_commands"]):.3f} mean consecutive commands over {episodes("nominal"):,} episodes
 - **Views:** oblique manipulation view (left) and top-down verification view (right)
 
 {disclosure}
+
+The video is illustrative; the aggregate performance claim comes from the
+{episodes("nominal"):,}-episode final evaluation rather than this single rollout.
 
 ## What to watch
 
@@ -325,7 +502,8 @@ to the same 12-command presentation limit.
 
 ## Interpretation
 
-The seed was declared once and used directly for both conditions. The aggregate
+Seed {int(nominal["seed"])} is the fixed representative presentation seed used
+for both conditions. The aggregate {episodes("robust"):,}-episode robustness
 evaluation—not either individual video—is the evidence for generalization under
 the held-out variation.
 """
@@ -339,7 +517,7 @@ coefficients at 0.7× nominal. Synchronized oblique and side-contact views show 
 fixed-seed rollout that completes multiple semantic commands before the grasp
 eventually fails.
 
-- **Fixed rollout:** seed {int(adverse["seed"])}, used directly without alternate-seed search
+- **Representative rollout:** seed {int(adverse["seed"])}, fixed for the final presentation package
 - **Rollout result:** {int(adverse["commands_completed"])} commands before dropping at {float(adverse["duration_seconds"]):.2f} simulation seconds
 - **Final evaluation:** {percent("adverse", "issued_command_completion_rate"):.2f}% issued-command completion, {percent("adverse", "drop_rate"):.2f}% episode drop rate, {float(final_results["adverse"]["mean_consecutive_commands"]):.3f} mean consecutive commands over {episodes("adverse"):,} episodes
 - **Views:** oblique manipulation view (left) and side contact/failure view (right)
@@ -350,8 +528,10 @@ eventually fails.
 
 Semantic targeting remains strong, but long-horizon grasp retention degrades
 at this deliberately difficult heavy-and-slippery corner. This negative result
-identifies a concrete sim-to-real robustness direction rather than hiding the
-policy's failure boundary.
+identifies a concrete robustness direction relevant to sim-to-real transfer
+rather than hiding the policy's failure boundary. The aggregate conclusion
+comes from the {episodes("adverse"):,}-episode adverse evaluation, not this one
+representative trajectory.
 """
 
     return captions

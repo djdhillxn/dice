@@ -91,15 +91,15 @@ beginning. It is the intended option while iterating on presentation code.
 ## One-command workflow and story registry
 
 The public workflow is deliberately one end-to-end command. There is no
-composition-only checkpoint and no seed-selection phase. By default the script
+composition-only checkpoint. By default the script
 renders exactly `nominal_success`, `physics_variation`, and `adverse_boundary`.
 The small declarative registry in `dicedial.portfolio_video` supplies each
-story's panels, cameras, HUD style, filename, and poster position.
+story's panels, cameras, HUD style, filename, and event-aware poster strategy.
 
 For a later focused render, `--stories` accepts a comma-separated subset of
 those keys and automatically derives the minimum camera plan. The standard
 portfolio command should omit it so all three declared exports are produced.
-This configurability does not introduce seed search or additional experiments.
+This configurability does not introduce additional experiments.
 
 ## Capture and evidence contract
 
@@ -110,8 +110,9 @@ The full coordinator:
 2. Records repository and software provenance.
 3. Audits the numbered presentation die against the stock evaluation cube,
    requiring matching mass and inertia within the declared tolerance.
-4. Uses seed `9` by default for every condition, directly and without testing
-   alternate seeds.
+4. Uses representative seed `9` by default for every final presentation
+   condition. The videos are illustrative; aggregate claims remain grounded in
+   the completed 1,000-episode-per-condition evaluation.
 5. Captures nominal and symmetric variation through exactly 12 confirmed
    commands. The adverse capture has no command limit and continues until its
    fixed-seed drop or the 24-second horizon; it fails clearly if no drop occurs.
@@ -136,9 +137,9 @@ generalization evidence.
 
 | Condition | Task | Commands | Termination |
 |---|---|---|---|
-| Nominal | `DICE-Shadow-Play-v0` | Repeating cycle `1, 6, 3, 5, 2, 4` | 12 confirmed commands, drop, or 40 s |
-| Symmetric variation | `DICE-Shadow-Play-Robust-v0` | Same repeating cycle | 12 confirmed commands, drop, or 40 s |
-| Adverse | `DICE-Shadow-Play-Adverse-v0` | Repeating cycle | Drop or the 24 s evaluation horizon |
+| Nominal | `DICE-Shadow-Play-v0` | `1, 6, 3, 5, 2, 4, 6, 2, 5, 1, 3, 4` | 12 confirmed commands, drop, or 40 s |
+| Symmetric variation | `DICE-Shadow-Play-Robust-v0` | Same 12-command sequence | 12 confirmed commands, drop, or 40 s |
+| Adverse | `DICE-Shadow-Play-Adverse-v0` | Repeating original cycle `1, 6, 3, 5, 2, 4` | Drop or the 24 s evaluation horizon |
 
 All conditions use the same frozen deterministic policy and numbered die. The
 symmetric condition samples object mass and physically consistent static and

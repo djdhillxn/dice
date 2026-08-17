@@ -27,7 +27,11 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab_tasks.direct.shadow_hand.shadow_hand_env_cfg import ShadowHandEnvCfg
 
-from dicedial.portfolio_video import PRESENTATION_MASS_KG
+from dicedial.portfolio_video import (
+    PORTFOLIO_ADVERSE_FACE_SEQUENCE,
+    PORTFOLIO_FACE_SEQUENCE,
+    PRESENTATION_MASS_KG,
+)
 
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -215,7 +219,7 @@ class DiceBaseEnvCfg(ShadowHandEnvCfg):
 
     # DirectRLEnv normally resets terminal environments inside ``step`` before
     # an outer video wrapper requests its frame. Presentation environments can
-    # opt out for the final terminal transition so a six-command hold or an
+    # opt out for the final terminal transition so a completed presentation or an
     # adverse drop remains visible. Training and evaluation always keep the
     # default automatic-reset behavior.
     defer_terminal_reset_for_capture = False
@@ -294,9 +298,9 @@ class DicePlayEnvCfg(DiceBaseEnvCfg):
     )
 
     target_mode = "cycle"
-    target_sequence = (1, 6, 3, 5, 2, 4)
+    target_sequence = PORTFOLIO_FACE_SEQUENCE
     switch_target_on_success = True
-    max_commands_per_episode = 6
+    max_commands_per_episode = len(PORTFOLIO_FACE_SEQUENCE)
     episode_length_s = 40.0
     emit_step_metrics = True
     visualize_goal_marker = False
@@ -318,6 +322,9 @@ class DicePlayAdverseEnvCfg(DicePlayEnvCfg):
     # Continue the command cycle until the object drops or the same 24-second
     # horizon used by final evaluation expires. This exposes the observed
     # long-horizon retention boundary instead of stopping after six commands.
+    # Keep the original six-face cycle here so the known seed-9 representative
+    # failure remains comparable to the adverse evaluation/scouting history.
+    target_sequence = PORTFOLIO_ADVERSE_FACE_SEQUENCE
     max_commands_per_episode = 0
     episode_length_s = 24.0
     events = DiceAdverseObjectEventsCfg()

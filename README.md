@@ -354,8 +354,10 @@ python -u scripts/render_portfolio_videos.py \
 ```
 
 This headless GCP workflow verifies the presentation die against the stock
-evaluation object, uses one declared seed (`9` by default) without seed search,
-and rejects unsynchronized camera replays. Nominal and symmetric-variation
+evaluation object, uses representative seed `9` consistently across the final
+presentation package, and rejects unsynchronized camera replays. The videos are
+illustrative; aggregate claims come from the completed 1,000-episode-per-condition
+evaluation. Nominal and symmetric-variation
 captures run for 12 successful commands; adverse capture runs until its drop or
 declared horizon. It exports nominal oblique/top success,
 nominal-versus-physics-variation, and adverse oblique/side failure-boundary

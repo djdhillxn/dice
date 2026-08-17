@@ -9,7 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dicedial.portfolio_video import (
+    PORTFOLIO_ADVERSE_FACE_SEQUENCE,
     PORTFOLIO_COMMAND_LIMITS,
+    PORTFOLIO_FACE_SEQUENCE,
     PORTFOLIO_PLAYBACK_SPEED,
     PORTFOLIO_SEED,
     PORTFOLIO_STORIES,
@@ -25,6 +27,7 @@ from dicedial.portfolio_video import (
     presentation_duration,
     probe_portfolio_video,
     resolve_portfolio_artifact,
+    select_story_poster_time,
 )
 
 
@@ -122,11 +125,14 @@ class TestPortfolioVideo(unittest.TestCase):
             },
         )
         self.assertIn("0.5× playback", captions["dice_nominal_success.md"])
-        self.assertIn("without seed search", captions["dice_nominal_success.md"])
+        self.assertIn("Representative rollout", captions["dice_nominal_success.md"])
+        self.assertIn("1,000-episode final evaluation", captions["dice_nominal_success.md"])
         self.assertIn("`FACE ERROR`", captions["dice_nominal_success.md"])
         self.assertIn("12-command", captions["dice_physics_variation.md"])
         self.assertIn("seed 9", captions["dice_adverse_boundary.md"])
         self.assertIn("45.00%", captions["dice_adverse_boundary.md"])
+        self.assertNotIn("without seed search", "\n".join(captions.values()))
+        self.assertNotIn("cherry-picking", "\n".join(captions.values()))
 
         nominal_only = build_portfolio_captions(
             final_results,
@@ -138,6 +144,14 @@ class TestPortfolioVideo(unittest.TestCase):
     def test_declares_fixed_seed_story_registry_and_capture_plan(self):
         self.assertEqual(PORTFOLIO_SEED, 9)
         self.assertEqual(PORTFOLIO_PLAYBACK_SPEED, 0.5)
+        self.assertEqual(
+            PORTFOLIO_FACE_SEQUENCE,
+            (1, 6, 3, 5, 2, 4, 6, 2, 5, 1, 3, 4),
+        )
+        self.assertEqual(
+            PORTFOLIO_ADVERSE_FACE_SEQUENCE,
+            (1, 6, 3, 5, 2, 4),
+        )
         self.assertEqual(
             PORTFOLIO_COMMAND_LIMITS,
             {"nominal": 12, "robust": 12, "adverse": 0},
@@ -166,6 +180,91 @@ class TestPortfolioVideo(unittest.TestCase):
             parse_story_spec("")
         with self.assertRaises(ValueError):
             parse_story_spec("unknown")
+
+    def test_semantic_poster_selection_uses_story_events(self):
+        nominal_rows = [
+            {
+                "sim_time_seconds": "4.90",
+                "commands_completed": "7",
+                "success": "0",
+                "drop": "0",
+            },
+            {
+                "sim_time_seconds": "5.00",
+                "commands_completed": "8",
+                "success": "1",
+                "drop": "0",
+            },
+            {
+                "sim_time_seconds": "8.00",
+                "commands_completed": "12",
+                "success": "1",
+                "drop": "0",
+            },
+        ]
+        nominal = select_story_poster_time(
+            "nominal_success",
+            {"nominal": nominal_rows},
+        )
+        self.assertEqual(nominal["strategy"], "confirmed_command")
+        self.assertEqual(nominal["command"], 8)
+        self.assertAlmostEqual(nominal["simulation_time_seconds"], 5.16)
+        self.assertAlmostEqual(nominal["video_time_seconds"], 10.32)
+
+        comparison = select_story_poster_time(
+            "physics_variation",
+            {
+                "nominal": [
+                    {
+                        "sim_time_seconds": "4.00",
+                        "commands_completed": "7",
+                        "drop": "0",
+                    },
+                    {
+                        "sim_time_seconds": "4.20",
+                        "commands_completed": "7",
+                        "drop": "0",
+                    },
+                ],
+                "robust": [
+                    {
+                        "sim_time_seconds": "4.10",
+                        "commands_completed": "7",
+                        "drop": "0",
+                    },
+                    {
+                        "sim_time_seconds": "4.30",
+                        "commands_completed": "7",
+                        "drop": "0",
+                    },
+                ],
+            },
+        )
+        self.assertEqual(comparison["strategy"], "shared_command_interval")
+        self.assertEqual(comparison["commands_completed"], 7)
+        self.assertAlmostEqual(comparison["simulation_time_seconds"], 4.15)
+        self.assertAlmostEqual(comparison["video_time_seconds"], 8.30)
+
+        adverse = select_story_poster_time(
+            "adverse_boundary",
+            {
+                "adverse": [
+                    {
+                        "sim_time_seconds": "7.80",
+                        "commands_completed": "10",
+                        "drop": "0",
+                    },
+                    {
+                        "sim_time_seconds": "8.07",
+                        "commands_completed": "10",
+                        "drop": "1",
+                    },
+                ]
+            },
+        )
+        self.assertEqual(adverse["strategy"], "pre_drop")
+        self.assertAlmostEqual(adverse["simulation_time_seconds"], 7.82)
+        self.assertAlmostEqual(adverse["video_time_seconds"], 15.64)
 
     def test_probe_returns_video_metadata_after_faststart_file_check(self):
         payload = {
