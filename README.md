@@ -345,6 +345,18 @@ path. Completed matching evaluations are reused after an interruption; pass
 `outputs/<run>/evaluation/checkpoint_sweep/`, including `ranking.json`,
 `ranking.csv`, `ranking.txt`, and `selected_checkpoint.txt`.
 
+#### Checkpoint Screening Results (500-Episode Nominal Sweep)
+
+| Checkpoint | Completed Commands / Ep | Issued Completion | Drop Rate | Median Latency | Rank / Status |
+|---|---:|---:|---:|---:|---|
+| `model_1000.pt` | 17.62 | 94.63% | 22.40% | 0.950 s | Candidate |
+| `model_2000.pt` | 27.84 | 96.53% | 14.80% | 0.700 s | Candidate |
+| `model_3000.pt` | 31.98 | 96.97% | 11.20% | 0.633 s | Candidate |
+| **`model_4000.pt`** | **33.42** | **97.10%** | **9.40%** | **0.617 s** | **Selected Winner** |
+| `model_final.pt` | 32.89 | 96.93% | 14.00% | 0.583 s | Candidate (higher drop rate) |
+
+`model_4000.pt` was selected before final testing because it achieved the lowest drop rate (9.40%) and highest sustained completed command throughput (33.42 / episode), whereas `model_final.pt` had an increased 14.00% drop rate despite slightly lower latency.
+
 ### Rendering Video
 
 ```bash
