@@ -1,4 +1,4 @@
-# DICE portfolio video rendering
+# DICE Dial portfolio video rendering
 
 ## Public deliverables
 

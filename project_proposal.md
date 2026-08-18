@@ -1,10 +1,10 @@
-# Project Proposal: DICE — Command-Conditioned In-Hand Die Reorientation
+# Project Proposal: DICE Dial — Command-Conditioned In-Hand Die Reorientation
 
 ## 1. Executive Summary
 
-The objective of **DICE** is to train a 20-DoF Shadow Hand in NVIDIA Isaac Lab to perform continuous, multi-command in-hand reorientation of a held die. The policy must rotate the die until a requested semantic face (1 through 6) points vertically upward, stabilize the die for a confirmation window, and immediately transition to new face targets in sequence without dropping or resetting the object.
+The objective of **DICE Dial** is to train a 20-DoF Shadow Hand in NVIDIA Isaac Lab to perform continuous, multi-command in-hand reorientation of a held die. The policy must rotate the die until a requested semantic face (1 through 6) points vertically upward, stabilize the die for a confirmation window, and immediately transition to new face targets in sequence without dropping or resetting the object.
 
-This project deliberately avoids multi-stage hand-crafted curriculum learning. Instead, it relies on a **single, robust, end-to-end PPO training run** built upon potential-based reward shaping, explicit 3D geometric orientation vectors, and extended temporal credit assignment.
+This project deliberately avoids multi-stage hand-crafted curriculum learning. Instead, it relies on a **single, robust, end-to-end PPO training run** built upon differential progress reward shaping, explicit 3D geometric orientation vectors, and extended temporal credit assignment.
 
 ---
 
@@ -90,7 +90,7 @@ $$\theta_t = \arccos(\operatorname{clamp}(\text{alignment}_t)),\qquad
 3. **Drop/Throughput Trade-Off**: Report drop rate alongside command completion and throughput across 1,000 nominal test episodes; a higher-throughput policy is not rejected solely for exceeding the earlier aspirational 5% drop target.
 4. **Held-Out Mass & Friction Robustness**: Evaluated on `DICE-Shadow-Robust-v0` ($\pm 20\%$ mass & friction).
 5. **Adverse Material Stress Test**: Evaluated on `DICE-Shadow-Adverse-v0` with fixed $1.5\times$ object mass and $0.7$ surface friction.
-6. **Deterministic Presentation Pipeline**: Produces a nominal hero, a multi-angle six-face task explainer, and a robustness/failure-boundary video from replay-validated action trajectories. Rendering remains a presentation step, not part of the quantitative acceptance criteria.
+6. **Deterministic Presentation Pipeline**: Produces a 12-command nominal oblique/top rollout, a nominal-versus-held-out-physics comparison, and an adverse oblique/side failure-boundary video from replay-validated action trajectories. Rendering remains a presentation step, not part of the quantitative acceptance criteria.
 
 ---
 
@@ -116,4 +116,4 @@ The complete interpretation and limitations are recorded in
 
 ---
 
-*This document records the implemented design, acceptance criteria, and final experimental validation for the DICE project.*
+*This document records the implemented design, acceptance criteria, and final experimental validation for the DICE Dial project.*

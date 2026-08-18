@@ -1,4 +1,4 @@
-# DICE final results
+# DICE Dial final results
 
 ## Closure decision
 
@@ -203,3 +203,6 @@ and the documented
 A compact, tracked copy of the comparison table is available as
 [`final_comparison.csv`](final_comparison.csv). The larger checkpoints and
 per-episode files remain under the ignored `outputs/` run directory.
+
+For the papers, software, and physics documentation behind the project, see
+[`references.md`](references.md).

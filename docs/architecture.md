@@ -1,4 +1,4 @@
-# DICE architecture
+# DICE Dial architecture
 
 ## Simulator layer
 

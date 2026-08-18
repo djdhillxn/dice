@@ -1,145 +1,219 @@
-# DICE — Direct Terminal Workflow & Architecture
+# DICE Dial — Continuous Dexterous In-Hand Die Reorientation
 
-**DICE** trains a Shadow Hand to reorient a held die in-hand to a requested numbered face and continue through new commands sequentially without releasing the object.
+**DICE Dial** trains a 20-DoF Shadow Hand in NVIDIA Isaac Lab to rotate a held die to requested numbered faces and continue through new commands **without resetting the hand or object between successes**.
 
-All workflows run **directly from the terminal using Python scripts**.
+The final policy was trained with PPO over **327.68 million transitions**, selected by a nominal checkpoint sweep before the final test panels, and evaluated for **1,000 episodes per condition** under nominal physics, unseen ±20% object mass/friction variation, and a deliberately adverse heavy/low-friction corner.
 
-## Final outcome
+## Final results
 
-The completed experiment trained for 5,000 PPO iterations (327.68 million
-transitions) and selected `model_4000.pt` by a five-checkpoint nominal sweep.
-The frozen policy was then evaluated for 1,000 episodes in each final
-condition:
-
-| Metric | Nominal | Symmetric physics variation | Heavy / low-friction stress |
+| Metric | Nominal | Held-out ±20% physics | Adverse: 1.5× mass, 0.7× friction |
 |---|---:|---:|---:|
-| Issued-command completion | 97.09% | 97.07% | 95.92% |
-| Episode drop rate | 9.70% | 9.50% | 45.30% |
+| Issued-command completion | **97.09%** | **97.07%** | **95.92%** |
+| Episode drop rate | **9.70%** | **9.50%** | **45.30%** |
 | Mean completed commands / episode | 33.334 | 33.072 | 23.514 |
 | Median completed commands / episode | 37 | 37 | 32 |
 | Commands / simulated minute | 90.536 | 89.000 | 81.996 |
 | Median command latency | 0.617 s | 0.617 s | 0.650 s |
 | Minimum per-face completion | 96.88% | 96.80% | 95.11% |
-| Deterministic action OOB rate | 20.77% | 20.77% | 20.91% |
+| Deterministic actor-mean OOB rate | 20.77% | 20.77% | 20.91% |
 
-The moderate held-out physics distribution—object mass and material
-coefficients sampled within `[0.8, 1.2]` of nominal, with dynamic friction
-constrained not to exceed static friction—produced no statistically resolvable
-loss relative to nominal evaluation. The fixed adverse corner (`1.5x` mass and
-`0.7` object friction) preserved fast command completion but increased drops
-to 45.3%. This is a long-horizon retention failure: 424 of the 453 adverse
-drop episodes completed at least one command before dropping, and 219
-completed at least ten.
+The moderate robustness condition is a genuine **held-out dynamics test**: training used nominal object physics with no mass/friction randomization. Performance under the ±20% distribution was statistically indistinguishable from nominal on the reported drop-rate and throughput comparisons. The fixed adverse corner preserved rapid per-command reorientation but exposed a long-horizon grasp-retention boundary: 424 of 453 dropped episodes completed at least one command first, and 219 completed at least ten.
 
-`issued-command completion` is not a one-shot success probability. Every
-completed command counts as a successful attempt and the command active at
-episode termination counts as one unfinished attempt. It must therefore be
-read together with drop rate, command throughput, and latency. See
-[the full final report](docs/final_results.md) for provenance, uncertainty,
-failure decomposition, limitations, and the project-closure decision.
+`issued-command completion` is not a one-shot probability of never dropping the die. Every completed command counts as a successful attempt, and the command active when an episode terminates counts as one unfinished attempt:
 
-## Google Compute Engine / Conda setup
+\[
+\text{issued-command completion}
+=
+\frac{\text{completed commands}}
+{\text{completed commands}+\text{episodes}}.
+\]
 
-The GCE workflow uses the existing Conda environment named **`dice`** and should be launched from an SSH terminal in **headless** mode.
+Read it together with drop rate, completed commands per episode, and latency. The full statistical interpretation, failure decomposition, and limitations are in [`docs/final_results.md`](docs/final_results.md).
 
-### Activate and verify the DICE environment
+---
+
+## Task formulation
+
+A command requests one die face \(k\in\{1,\dots,6\}\) to point upward. If the current die rotation is \(R\in SO(3)\) and \(\mathbf n_k\) is the requested face normal in object coordinates, then
+
+\[
+\mathbf n_{\text{world}}=R\mathbf n_k,
+\qquad
+\text{alignment}=\mathbf n_{\text{world}}\cdot \hat{\mathbf z}.
+\]
+
+A command completes only after **20 consecutive 60 Hz control steps** satisfying all three gates:
+
+- orientation error \(\le 16^\circ\), equivalently alignment \(\ge \cos(16^\circ)\approx 0.961\);
+- die position error \(\le 0.12\text{ m}\);
+- die angular speed \(\le 1.25\text{ rad/s}\).
+
+The environment then immediately issues a different face command while preserving the current hand and object state. This continuous command switching is part of the task from the first training transition; there is no staged task progression.
+
+## Reward design: avoiding loitering
+
+A static alignment reward can produce a simple failure mode: a policy reaches a partially aligned pose and stays there because the same positive posture reward is collected every step while attempting the final rotation risks a drop.
+
+DICE Dial instead rewards **change in angular error**:
+
+\[
+\theta_t=\arccos(\operatorname{clamp}(\text{alignment}_t)),
+\qquad
+r_{\text{progress}}=40(\theta_{t-1}-\theta_t).
+\]
+
+Standing still therefore produces exactly zero progress reward. The remaining shaping terms are deliberately tied to task progress rather than static occupancy:
+
+- **Signed hold progress:** \(40(h_t-h_{t-1})/20\), so breaking a partial confirmation hold claws back the accumulated shaping.
+- **Command completion:** raw `+250` bonus.
+- **Drop:** raw `-100` penalty when the object leaves the allowed in-hand region.
+- **Position / settling penalties:** discourage drift and excessive angular speed near the target.
+- **Applied-target rate penalty:** discourages unnecessarily abrupt controller changes.
+- **Raw-action boundary penalty:** penalizes Gaussian policy outputs beyond `|a| > 0.9`; the command actually applied to the hand is clamped to `[-1, 1]`.
+- **Global reward scale:** `0.1` is applied to the summed raw reward before PPO.
+
+This is **differential progress shaping**. The project does not rely on a claim that the full shaped reward is an exact policy-invariant potential transform.
+
+---
+
+## Policy architecture
+
+DICE Dial uses an **asymmetric actor-critic**: the actor receives a compact task-facing observation, while the critic may use additional simulator state during training.
+
+### Actor: 126 dimensions
+
+| Observation group | Dims | Contents |
+|---|---:|---|
+| Hand proprioception | 48 | 24 normalized joint positions + 24 scaled joint velocities |
+| Applied controller state | 20 | Smoothed joint targets currently applied to the hand |
+| Cube-frame fingertip kinematics | 30 | Five relative positions + five relative linear velocities |
+| Cube translation / velocity | 9 | Relative position, linear velocity, angular velocity |
+| Cube orientation | 6 | Continuous 6D rotation representation |
+| Command geometry | 7 | Requested world normal, alignment, rotation-axis error |
+| Hold progress | 1 | `hold_counter / 20` |
+| Fingertip load proxies | 5 | Bounded magnitudes derived from fingertip reaction wrenches |
+| **Total** | **126** | |
+
+### Critic: 247 dimensions
+
+The critic receives the full actor observation plus privileged fingertip 6D reaction wrenches, fingertip spatial velocities, object state, and raw hand joint state. Actor and critic are separate `[512, 512, 256, 128]` MLPs with **ELU activations and input normalization**.
+
+The actor excludes the critic's extra privileged state, but this should not be read as a completed real-robot deployment interface: real hardware would still need reliable object-state estimation and compatible fingertip/load sensing.
+
+The action space is the inherited **20-dimensional Shadow Hand joint-target command**.
+
+See [`docs/architecture.md`](docs/architecture.md) for the exact observation contract and simulation/presentation object distinction.
+
+---
+
+## Training
+
+| Item | Final configuration |
+|---|---|
+| Simulator | NVIDIA Isaac Lab / Isaac Sim |
+| RL library | RSL-RL PPO |
+| Training environments | 2,048 |
+| Control frequency | 60 Hz (`dt = 1/120 s`, decimation 2) |
+| Rollout length | 32 steps / environment |
+| PPO iterations | 5,000 |
+| Total transitions | 327,680,000 |
+| Actor / critic MLP | `[512, 512, 256, 128]`, ELU |
+| Initial policy noise | 0.6 learned scalar std |
+| Learning rate | `3e-4`, fixed |
+| Discount / GAE | `gamma = 0.99`, `lambda = 0.95` |
+| PPO clip | 0.2 |
+| Entropy coefficient | 0.0 |
+| Training seed | 42 |
+| Hardware | NVIDIA L4 |
+| Training physics randomization | **None** |
+
+The final run used Isaac Lab `2.3.2.post1`, RSL-RL `3.1.2`, PyTorch `2.7.0+cu128`, Python `3.11.15`, and CUDA `12.8`.
+
+### Checkpoint selection
+
+Five saved policies were screened on **500 nominal episodes each** before the final three-condition evaluation:
+
+| Checkpoint | Completed commands / ep | Issued completion | Drop rate | Median latency | Status |
+|---|---:|---:|---:|---:|---|
+| `model_1000.pt` | 17.62 | 94.63% | 22.40% | 0.950 s | Candidate |
+| `model_2000.pt` | 27.84 | 96.53% | 14.80% | 0.700 s | Candidate |
+| `model_3000.pt` | 31.98 | 96.97% | 11.20% | 0.633 s | Candidate |
+| **`model_4000.pt`** | **33.42** | **97.10%** | **9.40%** | **0.617 s** | **Selected** |
+| `model_final.pt` | 32.89 | 96.93% | 14.00% | 0.583 s | Higher drop rate |
+
+`model_4000.pt` was selected **before final testing** because it gave the best nominal retention/throughput trade-off. Training longer under the same recipe did not monotonically improve safety.
+
+---
+
+## Final evaluation
+
+The frozen `model_4000.pt` checkpoint was evaluated for **1,000 full 24-second episodes per condition** using 256 concurrent environments:
+
+1. **Nominal** — stock DexCube, nominal material parameters.
+2. **Held-out ±20% physics** — mass, static friction, and dynamic friction sampled within `[0.8, 1.2]` of nominal; dynamic friction is constrained not to exceed static friction.
+3. **Adverse stress** — fixed `1.5×` object mass and `0.7×` object static/dynamic friction.
+
+The adverse test changes mass and friction together, so it identifies a useful stress boundary but **not** the separate causal contribution of each parameter. Under this condition:
+
+| Adverse drop decomposition | Result |
+|---|---:|
+| Dropped episodes | 453 / 1,000 |
+| Drops after at least 1 completed command | 424 |
+| Drops after at least 10 completed commands | 219 |
+| Drops after at least 20 completed commands | 109 |
+| Median completed commands before drop | 9 |
+| Median time before drop | 7.28 s |
+| Mean commands in episodes surviving to timeout | 33.47 |
+
+The result is best described as **simulation robustness to held-out object-material variation with a measured adverse boundary**. It is relevant to sim-to-real methodology, but no real-hardware transfer is claimed.
+
+---
+
+## Portfolio videos
+
+The final presentation package contains three replay-validated 1920×1080 H.264 videos at **0.5× playback**:
+
+| Story | What it shows |
+|---|---|
+| `dice_nominal_success.mp4` | 12-command nominal rollout, synchronized oblique + top views |
+| `dice_physics_variation.mp4` | Same policy / face sequence under nominal vs held-out ±20% physics |
+| `dice_adverse_boundary.mp4` | Representative heavy/low-friction rollout through its eventual drop |
+
+Representative seed `9` is fixed across the presentation package. These videos are illustrative; all quantitative claims above come from the aggregate 1,000-episode evaluations.
+
+The renderer verifies checkpoint hashes, audits the numbered presentation die against the stock evaluation object's mass/inertia, replays identical action trajectories across camera views, checks telemetry synchronization, creates event-selected WebP posters, and writes checksums plus a machine-readable manifest.
+
+Run the complete renderer with:
 
 ```bash
-conda activate dice
-cd ~/projects/dice
-python --version
-which python
+python -u scripts/render_portfolio_videos.py \
+  <timestamp>_<run_name> \
+  --force
 ```
 
-The current repository does not contain an `environment.yml` / `environment.yaml`; the project-level Python dependencies are defined in `pyproject.toml`. Install or refresh the repository with:
+See [`docs/video_rendering.md`](docs/video_rendering.md) for the full evidence and rendering contract.
+
+---
+
+## Reproducing the workflow
+
+### Install the project
+
+The Isaac Lab / Isaac Sim runtime must already be available. Inside the DICE Conda environment:
 
 ```bash
 python -m pip install -e .
 ```
 
-For video annotation support:
+For portfolio rendering:
 
 ```bash
 python -m pip install -e ".[video]"
 ```
 
-DICE pins `numpy==1.26.0` because Isaac Sim 5.1 requires that NumPy version,
-and pins `opencv-python-headless==4.11.0.86` because the VM does not need
-OpenCV GUI support. The video extra also installs MoviePy for Gymnasium's raw
-capture and Pillow for anti-aliased HUD text; final H.264 encoding requires the
-system `ffmpeg` package. Do not install the latest OpenCV 5 wheel in this Isaac
-environment: on Python 3.11 it can require NumPy 2 and replace Isaac Sim's
-compatible NumPy.
+The project pins `numpy==1.26.0` and `opencv-python-headless==4.11.0.86` for the final Isaac Sim 5.1 environment. VM setup, compatibility notes, the `CXXABI_1.3.15` repair, TensorBoard, and GCE-specific commands are intentionally kept out of this README; see [`docs/gcp_setup.md`](docs/gcp_setup.md).
 
-If a previous editable install already upgraded NumPy to 2.x, repair the active `dice` environment once:
-
-```bash
-python -m pip uninstall -y \
-  opencv-python opencv-contrib-python \
-  opencv-python-headless opencv-contrib-python-headless
-
-python -m pip install --upgrade \
-  "numpy==1.26.0" \
-  "opencv-python-headless==4.11.0.86"
-
-python -m pip install -e ".[video]"
-python -m pip check
-
-python - <<'PY'
-import cv2
-import numpy
-import sqlite3
-
-print("numpy:", numpy.__version__)
-print("opencv:", cv2.__version__)
-print("sqlite:", sqlite3.sqlite_version)
-PY
-```
-
-The training script also refuses to start Isaac Sim if NumPy is not exactly `1.26.0`, so a future `pip install` cannot silently launch an unsupported runtime.
-
-### If an environment YAML is added later
-
-Create it under the same environment name:
-
-```bash
-conda env create -n dice -f environment.yml
-conda activate dice
-python -m pip install -e ".[video]"
-```
-
-If that YAML is changed later, update the existing environment rather than creating another one:
-
-```bash
-conda env update -n dice -f environment.yml --prune
-conda activate dice
-python -m pip install -e ".[video]"
-```
-
-Changes only to `pyproject.toml` do not require recreating the Conda environment; rerun the editable install.
-
-### Fix `CXXABI_1.3.15` / `libstdc++.so.6` on Ubuntu 22.04
-
-If Isaac Sim reports that `/lib/x86_64-linux-gnu/libstdc++.so.6` does not provide `CXXABI_1.3.15`, verify the Conda runtime:
-
-```bash
-strings "$CONDA_PREFIX/lib/libstdc++.so.6" | grep CXXABI_1.3.15
-```
-
-If that symbol is missing:
-
-```bash
-conda install -y -c conda-forge "libstdcxx-ng>=13" "libgcc-ng>=13"
-```
-
-Then make the active environment's libraries take precedence for this shell and verify `sqlite3` before launching Isaac Sim:
-
-```bash
-export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-python -c "import sqlite3; print('sqlite OK:', sqlite3.sqlite_version)"
-```
-
-### Headless GCE training
+### Train
 
 ```bash
 python -u scripts/train_rsl.py \
@@ -150,234 +224,86 @@ python -u scripts/train_rsl.py \
   --headless
 ```
 
-`python -u` keeps terminal output unbuffered over SSH. The training script now prints and saves startup milestones before/after Gym creation, the RSL-RL wrapper reset, runner construction, and the PPO learning loop. If startup stalls, inspect the newest `outputs/<run>/startup.log` rather than guessing which layer is blocked.
-
-The repeated `sh: 1: zenity: not found` message is not a request to install `zenity` for headless training. Always use `--headless` on the VM.
-
-Before launching a paid full run after changing observations, actions, or the
-critic state, run the two-iteration simulator contract preflight on the VM:
+Before a paid full run after changing the actor, critic, observation, action, or controller contract:
 
 ```bash
 bash scripts/run_training_preflight.sh 64 2
 ```
 
-The launcher verifies that the environment returns separate policy and critic
-tensors with the configured dimensions before it constructs PPO storage. A
-successful preflight must complete both PPO iterations and write a run with
-`"status": "complete"` under `outputs/preflight/`.
-
-### Training artifacts and TensorBoard
-
-Every run writes to:
-
-```text
-outputs/<timestamp>_<run_name>/
-```
-
-The directory contains:
-
-- `run.json`: command, complete environment/PPO configuration, Git state, hardware/software versions, timing, runtime status, and final checkpoint metadata.
-- `startup.log`: persisted launch-stage breadcrumbs for startup debugging.
-- `events.out.tfevents...`: TensorBoard scalars written by RSL-RL.
-- `training_metrics.csv`: portable iteration-by-iteration scalar export.
-- `training_summary.json`: first/last/extrema and last-100-iteration means for every scalar.
-- `runtime_logs/`: Isaac Lab and Kit logs produced during this run, when available.
-- `artifact_manifest.json`: complete artifact list and byte sizes for transfer auditing.
-- `model_*.pt`: periodic RSL-RL checkpoints (`save_interval = 1000` by default; override with `--save_interval`).
-- `model_final.pt`: explicit final/interrupted checkpoint from the DICE launcher.
-- `git/*.diff`: repository state captured by RSL-RL on the first learning iteration, including DICE after the runner registers this repository.
-- `evaluation/`: checkpoint selection plus nominal, symmetric-robust, and adverse frozen-policy results.
-
-RSL-RL logs PPO losses, learning rate, policy noise, FPS/collection/learning time, reward, episode length, and every scalar under `extras["log"]`. DICE additionally records actor-mean action bounds, alignment, position and angular speed, all three success-gate rates, simultaneous-gate rate, hold-counter tails, command/drop statistics, every reward component, action magnitude/RMS, and action saturation.
-
-`DICE/completion_frequency_per_env_step` is a frequency on the `[0, 1]` scale: it answers “what fraction of environments completed a command on this control step?” It is not a per-command success probability. Use frozen-policy evaluation for `target_face_success_rate`; that value is also stored on `[0, 1]` and should be multiplied by 100 for a percentage.
-
-Start TensorBoard on the VM with:
-
-```bash
-tensorboard --logdir outputs --host 127.0.0.1 --port 6006
-```
-
-Forward port `6006` over SSH from your local machine and open `http://localhost:6006`. RSL-RL also prints its native detailed PPO summary after every learning iteration, so no custom chunked `runner.learn()` loop is required.
-
----
-
-## 1. Terminal Workflow Overview
-
-| Script | Purpose | CLI Command Example |
-|---|---|---|
-| `scripts/train_rsl.py` | Primary RSL-RL PPO training with live terminal progress bar & metrics | `python -u scripts/train_rsl.py --task DICE-Shadow-Train-v0 --num_envs 2048 --max_iterations 5000 --run_name angular_bound_pilot_gurgaon --headless` |
-| `scripts/run_training_preflight.sh` | Two-iteration actor/critic contract and PPO smoke test | `bash scripts/run_training_preflight.sh 64 2` |
-| `scripts/evaluate_rsl.py` | Single-condition nominal, robust, or adverse evaluation with progress and JSON/CSV outputs | `python scripts/evaluate_rsl.py --task DICE-Shadow-Eval-v0 --checkpoint outputs/<run>/model_4000.pt --episodes 1000` |
-| `scripts/run_checkpoint_sweep.py` | Discovers, nominally evaluates, and ranks every saved checkpoint except `model_0.pt` | `python -u scripts/run_checkpoint_sweep.py <timestamp>_<run_name>` |
-| `scripts/run_final_evaluation.sh` | Runs the three final conditions, supports interruption-safe reuse, and writes combined JSON/CSV/text results | `bash scripts/run_final_evaluation.sh outputs/<run>/model_4000.pt` |
-| `scripts/render_portfolio_videos.py` | Runs the fixed-seed capture, replay validation, and composition pipeline end to end for three half-speed portfolio videos | `python -u scripts/render_portfolio_videos.py <timestamp>_<run_name> --force` |
-| `scripts/play_rsl.py` | Low-level deterministic condition/camera capture and action-trajectory replay | `python -u scripts/play_rsl.py --checkpoint outputs/<run>/model_4000.pt --condition nominal --camera hero --output videos/manual --headless` |
-| `scripts/annotate_video.py` | Strictly synchronizes the scalable HUD and creates a browser-compatible H.264 MP4 | See `docs/video_rendering.md` |
-
----
-
-## 2. Theoretical Analysis & Reward Design
-
-### Why Static Alignment Fails (The "Loitering" Problem)
-In naive setups, policies receive a static posture reward proportional to how close the requested face is to pointing upward. For example, if a die is held at 45 degrees, the static alignment reward gives a constant positive signal every control step. Over a 24-second episode (1,440 steps), sitting stationary at 45 degrees yields **hundreds of reward points** for doing nothing. If the policy tries to flip the die further, it risks dropping it. Consequently, the policy can fall into a **local minimum of loitering indefinitely** without ever attempting to complete commands.
-
-### Solutions Implemented
-
-1. **Angular-Error Progress Reward**:
-   $$\theta_t = \arccos(\operatorname{clamp}(\text{alignment}_t)),\qquad
-   \text{Reward}_{\text{progress}} = 40(\theta_{t-1}-\theta_t)$$
-   - Staying stationary yields **zero** progress reward.
-   - Angular progress has a consistent scale across difficult and near-target orientations.
-   - Rotating *toward* the target face yields positive reward; rotating *away* yields negative reward.
-
-2. **Signed Hold Progress Shaping**:
-   - Rewards each new valid hold step and claws the accumulated shaping back if the consecutive hold breaks:
-     $$\text{Reward}_{\text{hold}} = c_{\text{hold}} \cdot \frac{h_t-h_{t-1}}{\text{hold\_steps}}$$
-   - A partial hold cannot be repeatedly farmed for positive return.
-
-3. **Command Completion and Drop Terms**:
-   - Command completion earns a raw `+250`; dropping incurs a raw `-100`.
-   - A global reward scale of `0.1` makes their effective PPO rewards `+25` and `-10` while preserving the intended relative incentives.
-
-4. **Raw-Action Boundary Penalty**:
-   - The environment stores the unbounded Gaussian policy output, clamps only the command applied to the hand, and penalizes squared excess beyond `|a| = 0.9`.
-   - This gives PPO a learning signal against action-clipping aliasing while preserving bounded physical joint targets.
-
----
-
-## 3. Environments
-
-| Environment | Purpose | Object | Randomization |
-|---|---|---|---|
-| `DICE-Shadow-Train-v0` | Main PPO training | stock instanceable DexCube | none |
-| `DICE-Shadow-Eval-v0` | Nominal evaluation | stock instanceable DexCube | none |
-| `DICE-Shadow-Robust-v0` | Symmetric held-out robustness evaluation | stock instanceable DexCube | mass and physically consistent friction ±20% |
-| `DICE-Shadow-Adverse-v0` | Adverse material stress evaluation | stock instanceable DexCube | fixed 1.5x mass and 0.7 friction |
-| `DICE-Shadow-Play-v0` | Nominal video (coordinator targets 12 commands) | local numbered die | fixed nominal friction |
-| `DICE-Shadow-Play-Robust-v0` | Symmetric-variation video (coordinator targets 12 commands) | local numbered die | mass and physically consistent friction ±20% |
-| `DICE-Shadow-Play-Adverse-v0` | Long-horizon adverse failure video | local numbered die | fixed 1.5x mass and 0.7 friction |
-
----
-
-## 4. Actor and Critic Observations
-
-The action space is a 20-dimensional continuous Shadow Hand joint target command. The Gaussian policy output is retained for PPO and boundary-penalty accounting, while the environment clamps the command applied to the hand into `[-1, 1]`.
-
-The policy receives a **126-dimensional task-aligned** observation space:
-
-- **Hand proprioception** (48 dims): 24 normalized joint positions and 24 scaled joint velocities.
-- **Applied controller state** (20 dims): Normalized smoothed joint targets currently applied to the hand.
-- **Fingertip state** (30 dims): Five cube-frame fingertip positions and five cube-frame relative linear velocities.
-- **Cube translation and velocity** (9 dims): Position relative to the nominal in-hand center plus linear and angular velocity.
-- **Cube orientation** (6 dims): Continuous 6D rotation representation.
-- **Command geometry** (7 dims): Commanded face normal in world coordinates, its alignment with world-up, and the cross-product rotation-axis error.
-- **Hold progress** (1 dim): Normalized hold counter `hold_counter / 20`.
-- **Fingertip load proxies** (5 dims): Bounded force magnitudes derived from incoming fingertip joint reaction wrenches.
-
-The asymmetric critic receives a **247-dimensional privileged state** containing
-the actor observation, full fingertip reaction wrenches and spatial velocities,
-object pose and velocity, and raw hand joint state.
-
-The 126-dimensional actor is not checkpoint-compatible with the earlier
-121-dimensional policy. Start this configuration from a fresh policy. Evaluate
-older checkpoints with the repository revision and observation contract that
-created them.
-
----
-
-## 5. RSL-RL PPO Configuration
-
-- **Rollout Length**: `num_steps_per_env = 32` (65,536 transitions per update with 2,048 environments).
-- **Optimizer**: Adam with a fixed `3e-4` learning rate.
-- **Exploration**: Direct scalar standard deviation initialized at `0.6`, with no entropy bonus.
-- **Action application**: RSL-RL wrapper clipping is disabled; `DiceEnv` records raw actions and clamps only the applied controller command.
-- **Networks**: Separate actor and critic MLPs with `[512, 512, 256, 128]`, ELU activations, and observation normalization.
-- **Discount & GAE**: `gamma = 0.99`, `lambda = 0.95`.
-
----
-
-## 6. Usage Examples
-
-### Training
-```bash
-python scripts/train_rsl.py \
-  --task DICE-Shadow-Train-v0 \
-  --num_envs 2048 \
-  --max_iterations 5000 \
-  --run_name angular_bound_pilot_gurgaon \
-  --headless
-```
-
-### Evaluation
-```bash
-bash scripts/run_final_evaluation.sh \
-  outputs/<timestamp>_strong_run/model_4000.pt \
-  1000 \
-  256
-```
-
-The shell wrapper evaluates nominal physics with seed `2026`, symmetric held-out
-mass/friction with seed `2027`, and the fixed heavy/slippery stress condition
-with seed `2028`. Its stable default output is
-`evaluation/final_<checkpoint-stem>/`; matching completed 1,000-episode
-conditions are reused after an interruption. Pass `--force` as the fifth
-argument (or in place of the output-directory argument) to rerun every
-condition. Existing 500-episode summaries fail the reuse contract and are
-overwritten in place, so no manual cleanup or extra timestamp directory is
-needed. The directory contains per-condition CSV and JSON files plus
-`evaluation_run.json`, `final_summary.json`, `final_comparison.csv`, and
-`final_comparison.txt`.
-
-### Checkpoint Sweep
-
-Evaluate every periodic checkpoint plus `model_final.pt` sequentially, keep each
-checkpoint's artifacts separate, and rank them by the documented acceptance
-criteria:
+### Evaluate
 
 ```bash
 python -u scripts/run_checkpoint_sweep.py <timestamp>_<run_name>
 ```
 
-The command accepts either the run ID below `outputs/` or a direct run-directory
-path. Completed matching evaluations are reused after an interruption; pass
-`--force` to rerun them. Results are written to
-`outputs/<run>/evaluation/checkpoint_sweep/`, including `ranking.json`,
-`ranking.csv`, `ranking.txt`, and `selected_checkpoint.txt`.
-
-#### Checkpoint Screening Results (500-Episode Nominal Sweep)
-
-| Checkpoint | Completed Commands / Ep | Issued Completion | Drop Rate | Median Latency | Rank / Status |
-|---|---:|---:|---:|---:|---|
-| `model_1000.pt` | 17.62 | 94.63% | 22.40% | 0.950 s | Candidate |
-| `model_2000.pt` | 27.84 | 96.53% | 14.80% | 0.700 s | Candidate |
-| `model_3000.pt` | 31.98 | 96.97% | 11.20% | 0.633 s | Candidate |
-| **`model_4000.pt`** | **33.42** | **97.10%** | **9.40%** | **0.617 s** | **Selected Winner** |
-| `model_final.pt` | 32.89 | 96.93% | 14.00% | 0.583 s | Candidate (higher drop rate) |
-
-`model_4000.pt` was selected before final testing because it achieved the lowest drop rate (9.40%) and highest sustained completed command throughput (33.42 / episode), whereas `model_final.pt` had an increased 14.00% drop rate despite slightly lower latency.
-
-### Rendering Video
+Then run the three final conditions for the selected checkpoint:
 
 ```bash
-python -u scripts/render_portfolio_videos.py \
-  <timestamp>_<run_name> \
-  --force
+bash scripts/run_final_evaluation.sh \
+  outputs/<run>/model_4000.pt \
+  1000 \
+  256
 ```
 
-This headless GCP workflow verifies the presentation die against the stock
-evaluation object, uses representative seed `9` consistently across the final
-presentation package, and rejects unsynchronized camera replays. The videos are
-illustrative; aggregate claims come from the completed 1,000-episode-per-condition
-evaluation. Nominal and symmetric-variation
-captures run for 12 successful commands; adverse capture runs until its drop or
-declared horizon. It exports nominal oblique/top success,
-nominal-versus-physics-variation, and adverse oblique/side failure-boundary
-videos at 0.5× playback under
-`videos/<run>_model_4000/exports/`. Each MP4 has a footage-derived poster and a
-same-named Markdown caption; static title cards are not baked into the videos.
-`--force` deliberately replaces that run/checkpoint's previous video directory
-and starts the pipeline again from fresh captures.
+### Key scripts
 
-Install Ubuntu's `ffmpeg` and `fonts-dejavu-core` packages first. See the complete
-[portfolio video rendering runbook](docs/video_rendering.md).
+| Script | Purpose |
+|---|---|
+| `scripts/train_rsl.py` | RSL-RL PPO training + provenance |
+| `scripts/run_training_preflight.sh` | Actor/critic simulator contract check |
+| `scripts/run_checkpoint_sweep.py` | Nominal screening and checkpoint ranking |
+| `scripts/evaluate_rsl.py` | Single-condition frozen-policy evaluation |
+| `scripts/run_final_evaluation.sh` | Reproducible three-condition final evaluation |
+| `scripts/play_rsl.py` | Deterministic rollout capture and trajectory replay |
+| `scripts/render_portfolio_videos.py` | End-to-end final presentation pipeline |
+| `scripts/annotate_video.py` | Synchronized HUD and H.264 composition |
+
+---
+
+## Repository guide
+
+| Document | Purpose |
+|---|---|
+| [`project_proposal.md`](project_proposal.md) | Implemented task design and final objective |
+| [`docs/architecture.md`](docs/architecture.md) | Exact actor/critic, simulator, and object contracts |
+| [`docs/experiment_plan.md`](docs/experiment_plan.md) | Preflight, checkpoint selection, and evaluation protocol |
+| [`docs/final_results.md`](docs/final_results.md) | Final statistics, uncertainty, limitations, and closure decision |
+| [`docs/video_rendering.md`](docs/video_rendering.md) | Reproducible video evidence pipeline |
+| [`docs/gcp_setup.md`](docs/gcp_setup.md) | GCE / Conda / Isaac runtime notes |
+| [`docs/references.md`](docs/references.md) | Papers, software, and physics references |
+| [`docs/final_comparison.csv`](docs/final_comparison.csv) | Compact tracked final evaluation table |
+
+Large checkpoints, per-episode evaluation records, raw captures, and generated videos live under ignored `outputs/` and `videos/` directories; the tracked documentation records their exact provenance and summaries.
+
+---
+
+## Limitations and next steps
+
+- The policy was trained with **one PPO seed**. Evaluation confidence intervals therefore measure episode-sampling uncertainty, not training-seed variability.
+- The final conditions use fixed evaluation seeds and are reproducible, but they are not paired trajectory-by-trajectory.
+- Robustness testing covers object mass and friction only. Observation noise, latency, actuator mismatch, contact compliance, geometry variation, and real hardware were not tested.
+- The adverse condition changes mass and friction jointly and should not be interpreted as a mass-vs-friction ablation.
+- The deterministic Gaussian actor mean is outside `[-1,1]` for about **20.8%** of action dimensions. Applied commands are clamped before reaching the hand, and the rate is nearly unchanged across all three evaluation conditions; it remains an implementation diagnostic worth addressing in a future policy iteration.
+
+A substantive extension would train the same full task with physically plausible dynamics randomization, then reevaluate the unchanged adverse corner, add separate mass-only/friction-only stress tests, repeat training across multiple seeds, and finally perform real-object system identification before making a sim-to-real claim.
+
+---
+
+## References and foundations
+
+DICE Dial builds directly on the following work and software:
+
+1. **Isaac Lab** — Mittal et al., *Isaac Lab: A GPU-Accelerated Simulation Framework for Multi-Modal Robot Learning* ([paper](https://arxiv.org/abs/2511.04831), [project](https://github.com/isaac-sim/IsaacLab)).
+2. **RSL-RL** — Schwarke et al., *RSL-RL: A Learning Library for Robotics Research* ([paper](https://arxiv.org/abs/2509.10771), [project](https://github.com/leggedrobotics/rsl_rl)).
+3. **PPO** — Schulman et al., *Proximal Policy Optimization Algorithms* ([paper](https://arxiv.org/abs/1707.06347)).
+4. **Asymmetric actor-critic** — Pinto et al., *Asymmetric Actor Critic for Image-Based Robot Learning* ([paper](https://arxiv.org/abs/1710.06542)).
+5. **Dexterous Shadow Hand RL** — Andrychowicz et al., *Learning Dexterous In-Hand Manipulation* ([paper](https://arxiv.org/abs/1808.00177)).
+6. **Sequential dexterous manipulation / sim-to-real** — Akkaya et al., *Solving Rubik's Cube with a Robot Hand* ([paper](https://arxiv.org/abs/1910.07113)).
+7. **Continuous rotation representations** — Zhou et al., *On the Continuity of Rotation Representations in Neural Networks* ([paper](https://arxiv.org/abs/1812.07035)).
+8. **PhysX contact dynamics** — NVIDIA PhysX documentation on [rigid-body friction](https://nvidia-omniverse.github.io/PhysX/physx/5.3.0/docs/RigidBodyDynamics.html) and [material combine modes](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/rigid_bodies.html).
+
+A larger, annotated reading list covering dexterous manipulation, dynamics randomization, reward shaping, GAE, Isaac Sim, and related foundations is in [`docs/references.md`](docs/references.md).
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

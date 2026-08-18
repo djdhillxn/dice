@@ -1,4 +1,4 @@
-# DICE experiment plan
+# DICE Dial experiment plan
 
 ## Simulator contract preflight
 
